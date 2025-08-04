@@ -1,0 +1,6 @@
+# Infuse TV Rename Tool 依赖包
+# 本项目主要使用Python标准库，无需额外依赖
+# 但为了确保兼容性，建议使用Python 3.7+
+
+# 如果需要额外的功能扩展，可以添加以下依赖：
+# pathlib2>=2.3.0; python_version<"3.4" 
