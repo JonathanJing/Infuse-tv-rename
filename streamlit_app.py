@@ -7,29 +7,107 @@ Streamlit UI for Infuse TV Rename Tool
 
 import streamlit as st
 import os
-import tkinter as tk
-from tkinter import filedialog
+import subprocess
+import platform
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from tv_rename import TVRenameTool
 from multi_season_rename import MultiSeasonTVRenameTool
 
 
-def select_folder():
-    """使用文件对话框选择文件夹"""
+def extract_show_name_from_folder(folder_path: str) -> str:
+    """从文件夹路径中提取剧名"""
+    if not folder_path:
+        return ""
+    
     try:
-        # 创建一个隐藏的根窗口
-        root = tk.Tk()
-        root.withdraw()  # 隐藏主窗口
-        root.wm_attributes('-topmost', 1)  # 置于最前
+        folder_name = Path(folder_path).name
         
-        # 打开文件夹选择对话框
-        folder_path = filedialog.askdirectory(
-            title="选择TV剧文件夹"
-        )
+        # 清理常见的文件夹命名模式
+        # 移除年份 (1990-2099)
+        import re
+        show_name = re.sub(r'\b(19|20)\d{2}\b', '', folder_name)
         
-        root.destroy()  # 销毁窗口
-        return folder_path
+        # 移除常见的季数标识
+        show_name = re.sub(r'\b[Ss]eason\s*\d+\b', '', show_name, flags=re.IGNORECASE)
+        show_name = re.sub(r'\b[Ss]\d+\b', '', show_name)
+        show_name = re.sub(r'\b第\d+季\b', '', show_name)
+        
+        # 移除常见的分隔符和多余空格
+        show_name = re.sub(r'[._\-\[\](){}]', ' ', show_name)
+        show_name = re.sub(r'\s+', ' ', show_name).strip()
+        
+        # 移除常见的质量标识
+        quality_keywords = ['720p', '1080p', '4k', 'hdtv', 'web-dl', 'bluray', 'bdrip', 'dvdrip', 'webrip']
+        for keyword in quality_keywords:
+            show_name = re.sub(r'\b' + keyword + r'\b', '', show_name, flags=re.IGNORECASE)
+        
+        show_name = re.sub(r'\s+', ' ', show_name).strip()
+        
+        return show_name if show_name else folder_name
+        
+    except Exception:
+        return Path(folder_path).name if folder_path else ""
+
+
+def select_folder():
+    """使用系统原生文件对话框选择文件夹"""
+    try:
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            # 使用AppleScript打开文件夹选择对话框
+            script = '''
+            tell application "Finder"
+                activate
+                set folderPath to choose folder with prompt "选择TV剧文件夹"
+                return POSIX path of folderPath
+            end tell
+            '''
+            result = subprocess.run(['osascript', '-e', script], 
+                                  capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                return result.stdout.strip()
+            
+        elif system == "Windows":  # Windows
+            # 使用PowerShell打开文件夹选择对话框
+            script = '''
+            Add-Type -AssemblyName System.Windows.Forms
+            $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+            $folderBrowser.Description = "选择TV剧文件夹"
+            $folderBrowser.ShowNewFolderButton = $false
+            if ($folderBrowser.ShowDialog() -eq "OK") {
+                Write-Output $folderBrowser.SelectedPath
+            }
+            '''
+            result = subprocess.run(['powershell', '-Command', script], 
+                                  capture_output=True, text=True, timeout=60)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+                
+        elif system == "Linux":  # Linux
+            # 尝试使用zenity或kdekdialog
+            try:
+                result = subprocess.run(['zenity', '--file-selection', '--directory', 
+                                       '--title=选择TV剧文件夹'], 
+                                      capture_output=True, text=True, timeout=60)
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except FileNotFoundError:
+                try:
+                    result = subprocess.run(['kdedialog', '--getexistingdirectory', 
+                                           os.path.expanduser('~'), '--title', '选择TV剧文件夹'], 
+                                          capture_output=True, text=True, timeout=60)
+                    if result.returncode == 0:
+                        return result.stdout.strip()
+                except FileNotFoundError:
+                    pass
+        
+        return ""
+        
+    except subprocess.TimeoutExpired:
+        st.warning("文件夹选择超时，请手动输入路径")
+        return ""
     except Exception as e:
         st.error(f"文件夹选择出错: {e}")
         return ""
@@ -61,6 +139,8 @@ def main():
     # 初始化session state
     if 'folder_path' not in st.session_state:
         st.session_state.folder_path = ""
+    if 'show_name' not in st.session_state:
+        st.session_state.show_name = ""
     
     col1, col2 = st.sidebar.columns([3, 1])
     
@@ -80,18 +160,42 @@ def main():
             if selected_folder:
                 st.session_state.folder_path = selected_folder
                 folder_path = selected_folder
+                # 自动从文件夹名提取剧名
+                extracted_name = extract_show_name_from_folder(selected_folder)
+                if extracted_name and not st.session_state.show_name:
+                    st.session_state.show_name = extracted_name
                 st.rerun()  # 刷新页面以更新输入框
     
-    # 更新session state
+    # 更新session state和自动提取剧名
     if folder_path != st.session_state.folder_path:
         st.session_state.folder_path = folder_path
+        # 当用户手动输入路径时也自动提取剧名
+        if folder_path and not st.session_state.show_name:
+            extracted_name = extract_show_name_from_folder(folder_path)
+            if extracted_name:
+                st.session_state.show_name = extracted_name
     
     # 剧名输入
     show_name = st.sidebar.text_input(
         "剧名",
+        value=st.session_state.show_name,
         placeholder="如: Friends",
-        help="输入电视剧的名称，将用于文件重命名"
+        help="剧名会从文件夹名自动提取，你可以手动修改",
+        key="show_name_input"
     )
+    
+    # 更新session state中的剧名
+    if show_name != st.session_state.show_name:
+        st.session_state.show_name = show_name
+    
+    # 显示自动提取提示
+    if folder_path and st.session_state.show_name:
+        extracted_name = extract_show_name_from_folder(folder_path)
+        if extracted_name and extracted_name != show_name:
+            st.sidebar.info(f"💡 从文件夹提取的剧名: {extracted_name}")
+            if st.sidebar.button("🔄 使用提取的剧名", help="点击使用从文件夹名自动提取的剧名"):
+                st.session_state.show_name = extracted_name
+                st.rerun()
     
     # 季数输入（仅单季模式）
     season_number = 1
