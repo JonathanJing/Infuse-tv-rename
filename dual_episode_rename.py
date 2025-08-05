@@ -19,23 +19,25 @@ class DualEpisodeTVRenameTool:
     # 支持的媒体文件扩展名
     SUPPORTED_EXTENSIONS = {
         # 视频文件
-        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.rmvb', '.rm',
         # 其他媒体文件
         '.m4v', '.3gp', '.ogv',
         # 字幕文件
         '.srt', '.ass', '.ssa', '.sub'
     }
     
-    def __init__(self, root_folder: str, show_name: str):
+    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2):
         """
-        初始化双集重命名工具
+        初始化多集重命名工具
         
         Args:
             root_folder: 包含所有季文件夹的根目录
             show_name: 剧名
+            episodes_per_file: 每个文件包含的集数（默认为2）
         """
         self.root_folder = Path(root_folder)
         self.show_name = show_name.strip()
+        self.episodes_per_file = episodes_per_file
         
         # 验证输入
         if not self.root_folder.exists():
@@ -46,6 +48,9 @@ class DualEpisodeTVRenameTool:
         
         if not self.show_name:
             raise ValueError("剧名不能为空")
+        
+        if episodes_per_file < 1 or episodes_per_file > 5:
+            raise ValueError("每个文件的集数必须在1-5之间")
     
     def detect_season_folders(self) -> Dict[int, Path]:
         """
@@ -109,13 +114,61 @@ class DualEpisodeTVRenameTool:
             episode2 = int(match.group(2))
             return episode1, episode2
         
-        # 匹配单集 "第XX集" 格式
-        pattern3 = r'第(\d+)集'
+        # 匹配 "EXX EYY" 或 "EXXEYY" 格式
+        pattern3 = r'[Ee](\d+)\s*[Ee](\d+)'
         match = re.search(pattern3, filename)
         
         if match:
             episode1 = int(match.group(1))
+            episode2 = int(match.group(2))
+            return episode1, episode2
+        
+        # 匹配 "EXX-EYY" 格式
+        pattern4 = r'[Ee](\d+)-[Ee](\d+)'
+        match = re.search(pattern4, filename)
+        
+        if match:
+            episode1 = int(match.group(1))
+            episode2 = int(match.group(2))
+            return episode1, episode2
+        
+        # 匹配 "XX-YY" 格式（纯数字）
+        pattern5 = r'(\d+)-(\d+)'
+        match = re.search(pattern5, filename)
+        
+        if match:
+            episode1 = int(match.group(1))
+            episode2 = int(match.group(2))
+            # 只有当数字在合理范围内才认为是集数
+            if 1 <= episode1 <= 999 and 1 <= episode2 <= 999 and episode2 > episode1:
+                return episode1, episode2
+        
+        # 匹配单集 "第XX集" 格式
+        pattern6 = r'第(\d+)集'
+        match = re.search(pattern6, filename)
+        
+        if match:
+            episode1 = int(match.group(1))
             return episode1, None
+        
+        # 匹配单集 "EXX" 格式
+        pattern7 = r'[Ee](\d+)'
+        match = re.search(pattern7, filename)
+        
+        if match:
+            episode1 = int(match.group(1))
+            return episode1, None
+        
+        # 匹配单集纯数字格式（最后尝试）
+        pattern8 = r'(\d+)'
+        matches = re.findall(pattern8, filename)
+        
+        if matches:
+            # 取最后一个数字作为集数（通常文件名末尾的数字是集数）
+            for match in reversed(matches):
+                episode1 = int(match)
+                if 1 <= episode1 <= 999:
+                    return episode1, None
         
         # 如果没有匹配到，返回None
         return None, None
@@ -141,14 +194,13 @@ class DualEpisodeTVRenameTool:
         
         return media_files
     
-    def generate_new_name(self, file_path: Path, episode1: int, episode2: int, season: int) -> str:
+    def generate_new_name(self, file_path: Path, episodes: List[int], season: int) -> str:
         """
         生成新的文件名
         
         Args:
             file_path: 原文件路径
-            episode1: 第一集集数
-            episode2: 第二集集数（可能为None）
+            episodes: 集数列表
             season: 季数
             
         Returns:
@@ -156,19 +208,17 @@ class DualEpisodeTVRenameTool:
         """
         # 格式化季集编号
         season_str = f"S{season:02d}"
-        episode1_str = f"E{episode1:02d}"
         
-        if episode2 is not None:
-            episode2_str = f"E{episode2:02d}"
-            # 构建新文件名：剧名_S01E01E02.扩展名
-            new_name = f"{self.show_name}_{season_str}{episode1_str}{episode2_str}{file_path.suffix}"
-        else:
-            # 构建新文件名：剧名_S01E01.扩展名
-            new_name = f"{self.show_name}_{season_str}{episode1_str}{file_path.suffix}"
+        # 构建集数部分
+        episode_parts = [f"E{ep:02d}" for ep in episodes]
+        episode_str = "".join(episode_parts)
+        
+        # 构建新文件名：剧名_S01E01E02E03.扩展名
+        new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
         
         return new_name
     
-    def preview_season(self, season_num: int, folder_path: Path) -> List[Tuple[Path, str, int, int]]:
+    def preview_season(self, season_num: int, folder_path: Path) -> List[Tuple[Path, str, List[int]]]:
         """
         预览单个季的重命名结果
         
@@ -177,7 +227,7 @@ class DualEpisodeTVRenameTool:
             folder_path: 季文件夹路径
             
         Returns:
-            重命名计划列表
+            重命名计划列表：(文件路径, 新文件名, 集数列表)
         """
         media_files = self.get_media_files(folder_path)
         
@@ -186,19 +236,33 @@ class DualEpisodeTVRenameTool:
             return []
         
         rename_plan = []
+        episode_counter = 1  # 用于按顺序分配集数
         
         for file_path in media_files:
+            # 尝试从文件名解析集数（目前仅支持双集，可以扩展）
             episode1, episode2 = self.extract_episode_numbers(file_path.name)
             
-            if episode1 is not None:
-                new_name = self.generate_new_name(file_path, episode1, episode2, season_num)
-                rename_plan.append((file_path, new_name, episode1, episode2))
+            if episode1 is not None and episode2 is not None and self.episodes_per_file == 2:
+                # 成功解析到双集
+                episodes = [episode1, episode2]
+                new_name = self.generate_new_name(file_path, episodes, season_num)
+                rename_plan.append((file_path, new_name, episodes))
+            elif episode1 is not None and episode2 is None and self.episodes_per_file == 1:
+                # 成功解析到单集
+                episodes = [episode1]
+                new_name = self.generate_new_name(file_path, episodes, season_num)
+                rename_plan.append((file_path, new_name, episodes))
             else:
-                print(f"⚠️  无法解析文件名中的集数: {file_path.name}")
+                # 无法解析或格式不匹配，按顺序分配集数
+                print(f"⚠️  按顺序分配集数 (每文件{self.episodes_per_file}集): {file_path.name}")
+                episodes = list(range(episode_counter, episode_counter + self.episodes_per_file))
+                new_name = self.generate_new_name(file_path, episodes, season_num)
+                rename_plan.append((file_path, new_name, episodes))
+                episode_counter += self.episodes_per_file
         
         return rename_plan
     
-    def preview_all_seasons(self, season_folders: Dict[int, Path]) -> Dict[int, List[Tuple[Path, str, int, int]]]:
+    def preview_all_seasons(self, season_folders: Dict[int, Path]) -> Dict[int, List[Tuple[Path, str, List[int]]]]:
         """
         预览所有季的重命名结果
         
@@ -227,7 +291,7 @@ class DualEpisodeTVRenameTool:
         
         return all_plans
     
-    def execute_rename(self, all_plans: Dict[int, List[Tuple[Path, str, int, int]]]) -> Dict[int, Tuple[int, int]]:
+    def execute_rename(self, all_plans: Dict[int, List[Tuple[Path, str, List[int]]]]) -> Dict[int, Tuple[int, int]]:
         """
         执行重命名操作
         
@@ -246,7 +310,7 @@ class DualEpisodeTVRenameTool:
             success_count = 0
             failed_count = 0
             
-            for file_path, new_name, episode1, episode2 in rename_plan:
+            for file_path, new_name, episodes in rename_plan:
                 new_path = file_path.parent / new_name
                 
                 try:
@@ -258,10 +322,8 @@ class DualEpisodeTVRenameTool:
                     
                     # 执行重命名
                     file_path.rename(new_path)
-                    if episode2 is not None:
-                        print(f"✅ {file_path.name} -> {new_name} (第{episode1}集+第{episode2}集)")
-                    else:
-                        print(f"✅ {file_path.name} -> {new_name} (第{episode1}集)")
+                    episode_text = "+".join([f"第{ep}集" for ep in episodes])
+                    print(f"✅ {file_path.name} -> {new_name} ({episode_text})")
                     success_count += 1
                     
                 except Exception as e:

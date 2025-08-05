@@ -19,14 +19,14 @@ class TVRenameTool:
     # 支持的媒体文件扩展名
     SUPPORTED_EXTENSIONS = {
         # 视频文件
-        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
+        '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.rmvb', '.rm',
         # 其他媒体文件
         '.m4v', '.3gp', '.ogv',
         # 字幕文件
         '.srt', '.ass', '.ssa', '.sub'
     }
     
-    def __init__(self, folder_path: str, show_name: str, season: int = 1):
+    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1):
         """
         初始化重命名工具
         
@@ -34,10 +34,12 @@ class TVRenameTool:
             folder_path: TV剧文件夹路径
             show_name: 剧名
             season: 季数（默认为1）
+            episodes_per_file: 每个文件包含的集数（默认为1）
         """
         self.folder_path = Path(folder_path)
         self.show_name = show_name.strip()
         self.season = season
+        self.episodes_per_file = episodes_per_file
         
         # 验证输入
         if not self.folder_path.exists():
@@ -51,6 +53,9 @@ class TVRenameTool:
         
         if self.season < 1:
             raise ValueError("季数必须大于0")
+        
+        if episodes_per_file < 1 or episodes_per_file > 5:
+            raise ValueError("每个文件的集数必须在1-5之间")
     
     def get_media_files(self) -> List[Path]:
         """
@@ -70,32 +75,35 @@ class TVRenameTool:
         
         return media_files
     
-    def generate_new_name(self, file_path: Path, episode_number: int) -> str:
+    def generate_new_name(self, file_path: Path, episodes: List[int]) -> str:
         """
         生成新的文件名
         
         Args:
             file_path: 原文件路径
-            episode_number: 集数
+            episodes: 集数列表
             
         Returns:
             新文件名
         """
         # 格式化季集编号
         season_str = f"S{self.season:02d}"
-        episode_str = f"E{episode_number:02d}"
+        
+        # 构建集数部分
+        episode_parts = [f"E{ep:02d}" for ep in episodes]
+        episode_str = "".join(episode_parts)
         
         # 构建新文件名
         new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
         
         return new_name
     
-    def preview_rename(self) -> List[Tuple[Path, str]]:
+    def preview_rename(self) -> List[Tuple[Path, str, List[int]]]:
         """
         预览重命名结果
         
         Returns:
-            原文件路径和新文件名的元组列表
+            原文件路径、新文件名和集数列表的元组列表
         """
         media_files = self.get_media_files()
         
@@ -104,19 +112,23 @@ class TVRenameTool:
             return []
         
         rename_plan = []
+        episode_counter = 1
         
-        for i, file_path in enumerate(media_files, 1):
-            new_name = self.generate_new_name(file_path, i)
-            rename_plan.append((file_path, new_name))
+        for file_path in media_files:
+            # 根据每个文件包含的集数生成集数列表
+            episodes = list(range(episode_counter, episode_counter + self.episodes_per_file))
+            new_name = self.generate_new_name(file_path, episodes)
+            rename_plan.append((file_path, new_name, episodes))
+            episode_counter += self.episodes_per_file
         
         return rename_plan
     
-    def execute_rename(self, rename_plan: List[Tuple[Path, str]]) -> Tuple[int, int]:
+    def execute_rename(self, rename_plan: List[Tuple[Path, str, List[int]]]) -> Tuple[int, int]:
         """
         执行重命名操作
         
         Args:
-            rename_plan: 重命名计划（原文件路径和新文件名的元组列表）
+            rename_plan: 重命名计划（原文件路径、新文件名和集数列表的元组列表）
             
         Returns:
             成功和失败的文件数量元组
@@ -124,7 +136,7 @@ class TVRenameTool:
         success_count = 0
         failed_count = 0
         
-        for file_path, new_name in rename_plan:
+        for file_path, new_name, episodes in rename_plan:
             new_path = file_path.parent / new_name
             
             try:
@@ -136,7 +148,8 @@ class TVRenameTool:
                 
                 # 执行重命名
                 file_path.rename(new_path)
-                print(f"✅ {file_path.name} -> {new_name}")
+                episode_text = "+".join([f"第{ep}集" for ep in episodes])
+                print(f"✅ {file_path.name} -> {new_name} ({episode_text})")
                 success_count += 1
                 
             except Exception as e:

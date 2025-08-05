@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from tv_rename import TVRenameTool
 from multi_season_rename import MultiSeasonTVRenameTool
+from dual_episode_rename import DualEpisodeTVRenameTool
 
 
 def extract_show_name_from_folder(folder_path: str) -> str:
@@ -133,6 +134,23 @@ def main():
         help="单季模式：所有视频文件直接在选择的文件夹中\n多季模式：每个季度的视频文件在单独的子文件夹中"
     )
     
+    # 多集模式选项（仅多季模式）
+    use_multi_episode = False
+    episodes_per_file = 1
+    if mode == "多季模式 (每季一个子文件夹)":
+        use_multi_episode = st.sidebar.checkbox(
+            "🎬 多集模式",
+            help="每个文件包含多集内容，生成如 S01E01E02 或 S01E01E02E03 格式的文件名"
+        )
+        
+        if use_multi_episode:
+            episodes_per_file = st.sidebar.selectbox(
+                "每个文件的集数",
+                options=[2, 3],
+                index=0,
+                help="选择每个文件包含的集数"
+            )
+    
     # 文件夹选择
     st.sidebar.subheader("📁 选择文件夹")
     
@@ -197,8 +215,11 @@ def main():
                 st.session_state.show_name = extracted_name
                 st.rerun()
     
-    # 季数输入（仅单季模式）
+    # 季数输入和多集选项（仅单季模式）
     season_number = 1
+    single_season_multi_episode = False
+    single_season_episodes_per_file = 1
+    
     if mode == "单季模式 (文件在主文件夹)":
         season_number = st.sidebar.number_input(
             "季数",
@@ -207,6 +228,19 @@ def main():
             value=1,
             help="指定这个文件夹中视频文件的季数"
         )
+        
+        single_season_multi_episode = st.sidebar.checkbox(
+            "🎬 多集模式",
+            help="每个文件包含多集内容，生成如 S01E01E02 或 S01E01E02E03 格式的文件名"
+        )
+        
+        if single_season_multi_episode:
+            single_season_episodes_per_file = st.sidebar.selectbox(
+                "每个文件的集数",
+                options=[2, 3],
+                index=0,
+                help="选择每个文件包含的集数"
+            )
     
     # 验证输入
     if not folder_path or not show_name:
@@ -229,38 +263,54 @@ def main():
     st.markdown(f"**模式:** {mode}")
     
     if mode == "单季模式 (文件在主文件夹)":
-        handle_single_season_mode(folder_path, show_name, season_number)
+        handle_single_season_mode(folder_path, show_name, season_number, single_season_multi_episode, single_season_episodes_per_file)
     else:
-        handle_multi_season_mode(folder_path, show_name)
+        handle_multi_season_mode(folder_path, show_name, use_multi_episode, episodes_per_file)
 
 
-def handle_single_season_mode(folder_path: str, show_name: str, season_number: int):
+def handle_single_season_mode(folder_path: str, show_name: str, season_number: int, use_multi_episode: bool = False, episodes_per_file: int = 1):
     """处理单季模式"""
     st.markdown(f"**季数:** {season_number}")
+    if use_multi_episode:
+        st.markdown(f"**多集模式:** 开启 - 每个文件包含 {episodes_per_file} 集内容")
     
     try:
         # 创建重命名工具
-        tool = TVRenameTool(folder_path, show_name, season_number)
+        tool = TVRenameTool(folder_path, show_name, season_number, episodes_per_file)
         
         # 获取预览
         rename_plan = tool.preview_rename()
         
         if not rename_plan:
             st.warning("在选择的文件夹中没有找到支持的媒体文件")
-            st.info("支持的文件格式: mp4, mkv, avi, mov, wmv, flv, webm, m4v, 3gp, ogv, srt, ass, ssa, sub")
+            st.info("支持的文件格式: mp4, mkv, avi, mov, wmv, flv, webm, rmvb, rm, m4v, 3gp, ogv, srt, ass, ssa, sub")
             return
         
         # 显示预览
         st.subheader(f"📋 预览重命名结果 ({len(rename_plan)} 个文件)")
         
         preview_data = []
-        for i, (file_path, new_name) in enumerate(rename_plan, 1):
-            preview_data.append({
-                "序号": i,
-                "原文件名": file_path.name,
-                "新文件名": new_name,
-                "路径": str(file_path.parent)
-            })
+        for i, item in enumerate(rename_plan, 1):
+            if use_multi_episode and len(item) == 3:
+                # 多集模式：(file_path, new_name, episodes_list)
+                file_path, new_name, episodes = item
+                episode_text = "".join([f"E{ep:02d}" for ep in episodes])
+                preview_data.append({
+                    "序号": i,
+                    "原文件名": file_path.name,
+                    "新文件名": new_name,
+                    "集数": episode_text,
+                    "路径": str(file_path.parent)
+                })
+            else:
+                # 普通模式：(file_path, new_name, [episode])
+                file_path, new_name, episodes = item
+                preview_data.append({
+                    "序号": i,
+                    "原文件名": file_path.name,
+                    "新文件名": new_name,
+                    "路径": str(file_path.parent)
+                })
         
         st.dataframe(preview_data, use_container_width=True)
         
@@ -279,11 +329,15 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
         st.error(f"错误: {e}")
 
 
-def handle_multi_season_mode(folder_path: str, show_name: str):
+def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode: bool = False, episodes_per_file: int = 2):
     """处理多季模式"""
     try:
-        # 创建多季重命名工具
-        tool = MultiSeasonTVRenameTool(folder_path, show_name)
+        # 根据是否多集模式选择不同的工具
+        if use_multi_episode:
+            tool = DualEpisodeTVRenameTool(folder_path, show_name, episodes_per_file)
+            st.markdown(f"**多集模式:** 开启 - 每个文件包含 {episodes_per_file} 集内容")
+        else:
+            tool = MultiSeasonTVRenameTool(folder_path, show_name)
         
         # 检测季文件夹
         season_folders = tool.detect_season_folders()
@@ -321,12 +375,25 @@ def handle_multi_season_mode(folder_path: str, show_name: str):
         for season_num, rename_plan in sorted(all_plans.items()):
             with st.expander(f"第 {season_num} 季 ({len(rename_plan)} 个文件)", expanded=False):
                 season_preview_data = []
-                for i, (file_path, new_name) in enumerate(rename_plan, 1):
-                    season_preview_data.append({
-                        "序号": i,
-                        "原文件名": file_path.name,
-                        "新文件名": new_name
-                    })
+                for i, item in enumerate(rename_plan, 1):
+                    if use_multi_episode and len(item) == 3:
+                        # 多集模式：(file_path, new_name, episodes_list)
+                        file_path, new_name, episodes = item
+                        episode_text = "".join([f"E{ep:02d}" for ep in episodes])
+                        season_preview_data.append({
+                            "序号": i,
+                            "原文件名": file_path.name,
+                            "新文件名": new_name,
+                            "集数": episode_text
+                        })
+                    else:
+                        # 普通模式：(file_path, new_name)
+                        file_path, new_name = item
+                        season_preview_data.append({
+                            "序号": i,
+                            "原文件名": file_path.name,
+                            "新文件名": new_name
+                        })
                 st.dataframe(season_preview_data, use_container_width=True)
             total_files += len(rename_plan)
         
@@ -338,7 +405,7 @@ def handle_multi_season_mode(folder_path: str, show_name: str):
         
         with col1:
             if st.button("🔄 执行所有重命名", type="primary", use_container_width=True):
-                execute_multi_season_rename(tool, all_plans)
+                execute_multi_season_rename(tool, all_plans, use_multi_episode)
         
         with col2:
             if st.button("🔍 仅预览", use_container_width=True):
@@ -384,7 +451,7 @@ def manual_select_season_folders(root_folder: str) -> Dict[int, Path]:
     return season_folders
 
 
-def execute_single_season_rename(tool: TVRenameTool, rename_plan: List[Tuple[Path, str]]):
+def execute_single_season_rename(tool: TVRenameTool, rename_plan: List[Tuple[Path, str, List[int]]]):
     """执行单季重命名"""
     with st.spinner("正在重命名文件..."):
         try:
@@ -406,11 +473,14 @@ def execute_single_season_rename(tool: TVRenameTool, rename_plan: List[Tuple[Pat
             st.error(f"重命名过程中发生错误: {e}")
 
 
-def execute_multi_season_rename(tool: MultiSeasonTVRenameTool, all_plans: Dict[int, List[Tuple[Path, str]]]):
+def execute_multi_season_rename(tool, all_plans: Dict[int, List[Tuple[Path, str]]], use_multi_episode: bool = False):
     """执行多季重命名"""
     with st.spinner("正在重命名文件..."):
         try:
-            results = tool.execute_all_seasons(all_plans)
+            if use_multi_episode:
+                results = tool.execute_rename(all_plans)
+            else:
+                results = tool.execute_all_seasons(all_plans)
             
             # 显示每季结果
             st.subheader("📊 重命名结果")
