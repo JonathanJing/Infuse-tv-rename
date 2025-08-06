@@ -26,7 +26,7 @@ class DualEpisodeTVRenameTool:
         '.srt', '.ass', '.ssa', '.sub'
     }
     
-    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2):
+    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2, preserve_title: bool = False):
         """
         初始化多集重命名工具
         
@@ -34,10 +34,12 @@ class DualEpisodeTVRenameTool:
             root_folder: 包含所有季文件夹的根目录
             show_name: 剧名
             episodes_per_file: 每个文件包含的集数（默认为2）
+            preserve_title: 是否保留集名（默认为False）
         """
         self.root_folder = Path(root_folder)
         self.show_name = show_name.strip()
         self.episodes_per_file = episodes_per_file
+        self.preserve_title = preserve_title
         
         # 验证输入
         if not self.root_folder.exists():
@@ -194,6 +196,62 @@ class DualEpisodeTVRenameTool:
         
         return media_files
     
+    def extract_episode_title(self, filename: str) -> str:
+        """
+        从文件名中提取集名
+        
+        Args:
+            filename: 文件名
+            
+        Returns:
+            提取的集名，如果没有找到则返回空字符串
+        """
+        if not self.preserve_title:
+            return ""
+        
+        # 移除文件扩展名
+        name_without_ext = Path(filename).stem
+        
+        # 移除剧名（如果存在）
+        import re
+        cleaned_name = name_without_ext
+        
+        # 尝试移除剧名的各种变体
+        show_name_variants = [
+            self.show_name,
+            self.show_name.replace(' ', '.'),
+            self.show_name.replace(' ', '_'),
+            self.show_name.replace(' ', '-'),
+            re.sub(r'[^\w\s]', '', self.show_name)  # 移除特殊字符
+        ]
+        
+        for variant in show_name_variants:
+            if variant:
+                cleaned_name = re.sub(rf'\b{re.escape(variant)}\b', '', cleaned_name, flags=re.IGNORECASE)
+        
+        # 清理常见的标识符
+        patterns_to_remove = [
+            r'\b[Ss]\d+[Ee]\d+\b',  # S01E01 格式
+            r'\b[Ee]\d+\b',         # E01 格式
+            r'\b第\d+集\b',         # 第01集 格式
+            r'\b\d+\b',             # 纯数字
+            r'\b(720p|1080p|4k|hd|sd|hdtv|web-dl|bluray|bdrip|dvdrip|webrip)\b',  # 质量标识
+            r'\b(mp4|mkv|avi|mov|wmv|flv|webm|rmvb|rm|m4v)\b',  # 格式标识
+            r'[._\-\[\](){}]',      # 特殊字符
+        ]
+        
+        for pattern in patterns_to_remove:
+            cleaned_name = re.sub(pattern, ' ', cleaned_name, flags=re.IGNORECASE)
+        
+        # 清理多余空格并返回
+        episode_title = re.sub(r'\s+', ' ', cleaned_name).strip()
+        
+        # 如果提取的标题太短或包含太多数字，则认为无效
+        if len(episode_title) < 2 or len(re.findall(r'\d', episode_title)) > len(episode_title) * 0.5:
+            return ""
+        
+        return episode_title
+    
     def generate_new_name(self, file_path: Path, episodes: List[int], season: int) -> str:
         """
         生成新的文件名
@@ -213,8 +271,14 @@ class DualEpisodeTVRenameTool:
         episode_parts = [f"E{ep:02d}" for ep in episodes]
         episode_str = "".join(episode_parts)
         
-        # 构建新文件名：剧名_S01E01E02E03.扩展名
-        new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
+        # 提取集名（如果需要）
+        episode_title = self.extract_episode_title(file_path.name)
+        
+        # 构建新文件名
+        if episode_title:
+            new_name = f"{self.show_name}_{season_str}{episode_str}_{episode_title}{file_path.suffix}"
+        else:
+            new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
         
         return new_name
     
