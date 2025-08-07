@@ -17,7 +17,7 @@ from tv_rename import TVRenameTool
 class MultiSeasonTVRenameTool:
     """多季TV剧重命名工具类"""
     
-    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False):
+    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None):
         """
         初始化多季重命名工具
         
@@ -30,6 +30,7 @@ class MultiSeasonTVRenameTool:
         self.show_name = show_name.strip()
         self.preserve_title = preserve_title
         self.preserve_series = preserve_series
+        self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
         
         # 验证输入
         if not self.root_folder.exists():
@@ -147,7 +148,15 @@ class MultiSeasonTVRenameTool:
             
             try:
                 # 创建单季重命名工具
-                tool = TVRenameTool(str(folder_path), self.show_name, season_num, 1, self.preserve_title, self.preserve_series)  # 单集模式，使用preserve_title/series设置
+                tool = TVRenameTool(
+                    str(folder_path),
+                    self.show_name,
+                    season_num,
+                    1,
+                    self.preserve_title,
+                    self.preserve_series,
+                    self.series_parentheses_suffix,
+                )  # 单集模式，使用preserve_title/series设置
                 rename_plan = tool.preview_rename()
                 
                 # 转换数据格式以保持兼容性：(Path, str, List[int]) -> (Path, str)

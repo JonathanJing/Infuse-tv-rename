@@ -24,7 +24,7 @@ class TVRenameTool:
     }
     SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub'}
     
-    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False):
+    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None):
         """
         初始化重命名工具
         
@@ -41,6 +41,7 @@ class TVRenameTool:
         self.episodes_per_file = episodes_per_file
         self.preserve_title = preserve_title
         self.preserve_series = preserve_series
+        self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
         
         # 验证输入
         if not self.folder_path.exists():
@@ -75,7 +76,7 @@ class TVRenameTool:
         # 去括号内容
         text = re.sub(r'[\[\(（【].*?[\]\)）】]', ' ', text)
         # 去除结尾语言代码段（以分隔符分段的token）
-        lang_pat = re.compile(r'(?:[._\-\s])(zh(?:-[A-Za-z]+)?|en|eng|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt|pt-br)(?=$|[._\-\s]))', re.IGNORECASE)
+        lang_pat = re.compile(r'(?:[._\-\s])(zh(?:-[A-Za-z]+)?|en|eng|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt|pt-br)(?=$|[._\-\s])', re.IGNORECASE)
         # 反复清理直到不再匹配（处理多段如 .chs.eng）
         while True:
             new_text = lang_pat.sub('', text)
@@ -123,12 +124,13 @@ class TVRenameTool:
         results.sort(key=lambda x: x.name.lower())
         return results
     
-    def extract_episode_title(self, filename: str) -> str:
+    def extract_episode_title(self, filename: str, series_name_for_file: Optional[str] = None) -> str:
         """
         从文件名中提取集名
         
         Args:
             filename: 文件名
+            series_name_for_file: 实际用于该文件的新剧名（可能包含括号后缀或从原文件提取的剧名）
             
         Returns:
             提取的集名，如果没有找到则返回空字符串
@@ -143,28 +145,44 @@ class TVRenameTool:
         import re
         cleaned_name = name_without_ext
         
-        # 尝试移除剧名的各种变体
-        show_name_variants = [
-            self.show_name,
-            self.show_name.replace(' ', '.'),
-            self.show_name.replace(' ', '_'),
-            self.show_name.replace(' ', '-'),
-            re.sub(r'[^\w\s]', '', self.show_name)  # 移除特殊字符
-        ]
+        # 使用实际用于该文件的剧名（更智能移除中文等不适配\b的情况）
+        base_series = (series_name_for_file or self.show_name).strip()
+        # 生成变体：原始、分隔符替换、去特殊符号、去尾部括号注
+        base_series_no_paren = re.sub(r'\s*\([^()]*\)\s*$', '', base_series).strip()
+        raw_variants = [base_series, base_series_no_paren]
+        variants: List[str] = []
+        for v in raw_variants:
+            if not v:
+                continue
+            variants.extend([
+                v,
+                v.replace(' ', '.'),
+                v.replace(' ', '_'),
+                v.replace(' ', '-'),
+                re.sub(r'[^\w\s]', '', v)
+            ])
+        # 去重保持顺序
+        seen = set()
+        uniq_variants = []
+        for v in variants:
+            if v and v not in seen:
+                seen.add(v)
+                uniq_variants.append(v)
+        # 用分隔符边界而非\b去移除（兼容中文）
+        for variant in uniq_variants:
+            sep_bounded = rf'(?i)(^|[\s._\-]){re.escape(variant)}(?=$|[\s._\-])'
+            cleaned_name = re.sub(sep_bounded, ' ', cleaned_name)
         
-        for variant in show_name_variants:
-            if variant:
-                cleaned_name = re.sub(rf'\b{re.escape(variant)}\b', '', cleaned_name, flags=re.IGNORECASE)
-        
-        # 清理常见的标识符
+        # 清理常见的标识符（使用分隔边界，避免下划线导致 \b 失效）
         patterns_to_remove = [
-            r'\b[Ss]\d+[Ee]\d+\b',  # S01E01 格式
-            r'\b[Ee]\d+\b',         # E01 格式
-            r'\b第\d+集\b',         # 第01集 格式
-            r'\b\d+\b',             # 纯数字
+            r'(^|[\s._-])[Ss]\d{1,2}[Ee]\d{1,3}(?=$|[\s._-])',  # S01E01 格式
+            r'(^|[\s._-])[Ee]\d{1,3}(?=$|[\s._-])',              # E01 格式
+            r'(^|[\s._-])第\s*\d+\s*集(?=$|[\s._-])',            # 第01集 格式
+            r'(^|[\s._-])第\s*\d+\s*季(?=$|[\s._-])',            # 第01季 格式
+            r'\b\d+\b',                                           # 纯数字
             r'\b(720p|1080p|4k|hd|sd|hdtv|web-dl|bluray|bdrip|dvdrip|webrip)\b',  # 质量标识
-            r'\b(mp4|mkv|avi|mov|wmv|flv|webm|rmvb|rm|m4v)\b',  # 格式标识
-            r'[._\-\[\](){}]',      # 特殊字符
+            r'\b(mp4|mkv|avi|mov|wmv|flv|webm|rmvb|rm|m4v)\b',     # 格式标识
+            r'[._\-\[\](){}]',                                    # 特殊字符
         ]
         
         for pattern in patterns_to_remove:
@@ -202,8 +220,14 @@ class TVRenameTool:
         if self.preserve_series:
             series_name = extract_series_title_from_filename(file_path.name, fallback=self.show_name)
 
+        # 应用剧名括号后缀（如 年份）
+        if self.series_parentheses_suffix:
+            # 去除尾部已有的括号尾注，替换为新的
+            series_name = re.sub(r'\s*\([^()]*\)\s*$', '', series_name).strip()
+            series_name = f"{series_name} ({self.series_parentheses_suffix})"
+
         # 提取集名（如果需要）
-        episode_title = self.extract_episode_title(file_path.name)
+        episode_title = self.extract_episode_title(file_path.name, series_name_for_file=series_name)
         
         # 构建新文件名
         if episode_title:
