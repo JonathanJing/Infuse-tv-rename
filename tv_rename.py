@@ -11,22 +11,20 @@ import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional
+from name_utils import extract_series_title_from_filename
 
 
 class TVRenameTool:
     """TV剧重命名工具类"""
     
-    # 支持的媒体文件扩展名
-    SUPPORTED_EXTENSIONS = {
-        # 视频文件
+    # 媒体文件扩展名分类
+    VIDEO_EXTENSIONS = {
         '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.rmvb', '.rm',
-        # 其他媒体文件
-        '.m4v', '.3gp', '.ogv',
-        # 字幕文件
-        '.srt', '.ass', '.ssa', '.sub'
+        '.m4v', '.3gp', '.ogv'
     }
+    SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub'}
     
-    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False):
+    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False):
         """
         初始化重命名工具
         
@@ -42,6 +40,7 @@ class TVRenameTool:
         self.season = season
         self.episodes_per_file = episodes_per_file
         self.preserve_title = preserve_title
+        self.preserve_series = preserve_series
         
         # 验证输入
         if not self.folder_path.exists():
@@ -59,23 +58,70 @@ class TVRenameTool:
         if episodes_per_file < 1 or episodes_per_file > 5:
             raise ValueError("每个文件的集数必须在1-5之间")
     
-    def get_media_files(self) -> List[Path]:
+    def get_video_files(self) -> List[Path]:
         """
-        获取文件夹中的媒体文件
-        
-        Returns:
-            媒体文件路径列表
+        获取文件夹中的视频文件（用于编号）
         """
-        media_files = []
-        
+        video_files = []
         for file_path in self.folder_path.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in self.SUPPORTED_EXTENSIONS:
-                media_files.append(file_path)
-        
-        # 按文件名排序
-        media_files.sort(key=lambda x: x.name.lower())
-        
-        return media_files
+            if file_path.is_file() and file_path.suffix.lower() in self.VIDEO_EXTENSIONS:
+                video_files.append(file_path)
+        video_files.sort(key=lambda x: x.name.lower())
+        return video_files
+
+    def _normalized_stem_for_match(self, stem: str) -> str:
+        """生成用于匹配的视频/字幕文件名规范化stem（不去除季集标记）。"""
+        text = stem
+        # 去括号内容
+        text = re.sub(r'[\[\(（【].*?[\]\)）】]', ' ', text)
+        # 去除结尾语言代码段（以分隔符分段的token）
+        lang_pat = re.compile(r'(?:[._\-\s])(zh(?:-[A-Za-z]+)?|en|eng|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt|pt-br)(?=$|[._\-\s]))', re.IGNORECASE)
+        # 反复清理直到不再匹配（处理多段如 .chs.eng）
+        while True:
+            new_text = lang_pat.sub('', text)
+            if new_text == text:
+                break
+            text = new_text
+        # 统一分隔符和大小写
+        text = re.sub(r'[._\-]+', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip().lower()
+        return text
+
+    def _extract_subtitle_lang_suffix(self, video_stem: str, subtitle_stem: str) -> str:
+        """从字幕stem中提取语言后缀（如 'zh' 或 'chs.eng'）。"""
+        remainder = ''
+        if subtitle_stem.startswith(video_stem):
+            remainder = subtitle_stem[len(video_stem):]
+        # 也尝试以分隔符开头的差异
+        if remainder and remainder[0] in ['.', '_', '-', ' ']:
+            remainder = remainder[1:]
+        # 提取所有语言token
+        tokens = re.findall(r'(?:^|[._\-\s])(zh(?:-[A-Za-z]+)?|en|eng|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt|pt-br)(?=$|[._\-\s])', remainder, flags=re.IGNORECASE)
+        # 规范化、去重保持顺序
+        seen = set()
+        norm_tokens = []
+        for t in tokens:
+            key = t.lower()
+            if key not in seen:
+                seen.add(key)
+                norm_tokens.append(key)
+        return '.'.join(norm_tokens)
+
+    def find_associated_subtitles(self, video_path: Path) -> List[Path]:
+        """为给定视频查找同名字幕文件。"""
+        results: List[Path] = []
+        video_stem = video_path.stem
+        norm_video = self._normalized_stem_for_match(video_stem)
+        for file_path in self.folder_path.iterdir():
+            if not file_path.is_file() or file_path.suffix.lower() not in self.SUBTITLE_EXTENSIONS:
+                continue
+            sub_stem = file_path.stem
+            norm_sub = self._normalized_stem_for_match(sub_stem)
+            if norm_sub == norm_video:
+                results.append(file_path)
+        # 按名称排序，保证稳定
+        results.sort(key=lambda x: x.name.lower())
+        return results
     
     def extract_episode_title(self, filename: str) -> str:
         """
@@ -151,14 +197,19 @@ class TVRenameTool:
         episode_parts = [f"E{ep:02d}" for ep in episodes]
         episode_str = "".join(episode_parts)
         
+        # 选择剧名（可从原文件名提取）
+        series_name = self.show_name
+        if self.preserve_series:
+            series_name = extract_series_title_from_filename(file_path.name, fallback=self.show_name)
+
         # 提取集名（如果需要）
         episode_title = self.extract_episode_title(file_path.name)
         
         # 构建新文件名
         if episode_title:
-            new_name = f"{self.show_name}_{season_str}{episode_str}_{episode_title}{file_path.suffix}"
+            new_name = f"{series_name}_{season_str}{episode_str}_{episode_title}{file_path.suffix}"
         else:
-            new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
+            new_name = f"{series_name}_{season_str}{episode_str}{file_path.suffix}"
         
         return new_name
     
@@ -169,20 +220,31 @@ class TVRenameTool:
         Returns:
             原文件路径、新文件名和集数列表的元组列表
         """
-        media_files = self.get_media_files()
+        video_files = self.get_video_files()
         
-        if not media_files:
+        if not video_files:
             print(f"在文件夹 {self.folder_path} 中没有找到支持的媒体文件")
             return []
         
         rename_plan = []
         episode_counter = 1
         
-        for file_path in media_files:
+        for file_path in video_files:
             # 根据每个文件包含的集数生成集数列表
             episodes = list(range(episode_counter, episode_counter + self.episodes_per_file))
             new_name = self.generate_new_name(file_path, episodes)
             rename_plan.append((file_path, new_name, episodes))
+            # 同步字幕文件改名（与视频同基名）
+            new_base = Path(new_name).stem
+            associated_subs = self.find_associated_subtitles(file_path)
+            for sub_path in associated_subs:
+                # 尝试保留原有语言后缀
+                lang_suffix = self._extract_subtitle_lang_suffix(file_path.stem, sub_path.stem)
+                if lang_suffix:
+                    sub_new_name = f"{new_base}.{lang_suffix}{sub_path.suffix}"
+                else:
+                    sub_new_name = f"{new_base}{sub_path.suffix}"
+                rename_plan.append((sub_path, sub_new_name, episodes))
             episode_counter += self.episodes_per_file
         
         return rename_plan

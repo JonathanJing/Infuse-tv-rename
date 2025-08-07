@@ -137,6 +137,7 @@ def main():
     # 多集模式选项（仅多季模式）
     use_multi_episode = False
     episodes_per_file = 1
+    multi_season_preserve_series = False
     if mode == "多季模式 (每季一个子文件夹)":
         use_multi_episode = st.sidebar.checkbox(
             "🎬 多集模式",
@@ -154,6 +155,10 @@ def main():
         multi_season_preserve_title = st.sidebar.checkbox(
             "📝 保留集名",
             help="从原文件名中提取并保留集数标题，如：ShowName_S01E01_集名.ext"
+        )
+        multi_season_preserve_series = st.sidebar.checkbox(
+            "🏷️ 保留剧名",
+            help="更智能：从原文件名中提取并保留剧名（优先使用文件中的剧名片段）"
         )
     
     # 文件夹选择
@@ -225,6 +230,7 @@ def main():
     single_season_multi_episode = False
     single_season_episodes_per_file = 1
     single_season_preserve_title = False
+    single_season_preserve_series = False
     
     if mode == "单季模式 (文件在主文件夹)":
         season_number = st.sidebar.number_input(
@@ -252,6 +258,10 @@ def main():
             "📝 保留集名",
             help="从原文件名中提取并保留集数标题，如：ShowName_S01E01_集名.ext"
         )
+        single_season_preserve_series = st.sidebar.checkbox(
+            "🏷️ 保留剧名",
+            help="更智能：从原文件名中提取并保留剧名（优先使用文件中的剧名片段）"
+        )
     
     # 验证输入
     if not folder_path or not show_name:
@@ -274,22 +284,39 @@ def main():
     st.markdown(f"**模式:** {mode}")
     
     if mode == "单季模式 (文件在主文件夹)":
-        handle_single_season_mode(folder_path, show_name, season_number, single_season_multi_episode, single_season_episodes_per_file, single_season_preserve_title)
+        handle_single_season_mode(
+            folder_path,
+            show_name,
+            season_number,
+            single_season_multi_episode,
+            single_season_episodes_per_file,
+            single_season_preserve_title,
+            single_season_preserve_series,
+        )
     else:
-        handle_multi_season_mode(folder_path, show_name, use_multi_episode, episodes_per_file, multi_season_preserve_title)
+        handle_multi_season_mode(
+            folder_path,
+            show_name,
+            use_multi_episode,
+            episodes_per_file,
+            multi_season_preserve_title,
+            multi_season_preserve_series,
+        )
 
 
-def handle_single_season_mode(folder_path: str, show_name: str, season_number: int, use_multi_episode: bool = False, episodes_per_file: int = 1, preserve_title: bool = False):
+def handle_single_season_mode(folder_path: str, show_name: str, season_number: int, use_multi_episode: bool = False, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False):
     """处理单季模式"""
     st.markdown(f"**季数:** {season_number}")
     if use_multi_episode:
         st.markdown(f"**多集模式:** 开启 - 每个文件包含 {episodes_per_file} 集内容")
     if preserve_title:
         st.markdown(f"**保留集名:** 开启 - 从原文件名中提取集数标题")
+    if preserve_series:
+        st.markdown(f"**保留剧名:** 开启 - 从原文件名中提取剧名片段")
     
     try:
         # 创建重命名工具
-        tool = TVRenameTool(folder_path, show_name, season_number, episodes_per_file, preserve_title)
+        tool = TVRenameTool(folder_path, show_name, season_number, episodes_per_file, preserve_title, preserve_series)
         
         # 获取预览
         rename_plan = tool.preview_rename()
@@ -342,19 +369,23 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
         st.error(f"错误: {e}")
 
 
-def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode: bool = False, episodes_per_file: int = 2, preserve_title: bool = False):
+def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode: bool = False, episodes_per_file: int = 2, preserve_title: bool = False, preserve_series: bool = False):
     """处理多季模式"""
     try:
         # 根据是否多集模式选择不同的工具
         if use_multi_episode:
-            tool = DualEpisodeTVRenameTool(folder_path, show_name, episodes_per_file, preserve_title)
+            tool = DualEpisodeTVRenameTool(folder_path, show_name, episodes_per_file, preserve_title, preserve_series)
             st.markdown(f"**多集模式:** 开启 - 每个文件包含 {episodes_per_file} 集内容")
             if preserve_title:
                 st.markdown(f"**保留集名:** 开启 - 从原文件名中提取集数标题")
+            if preserve_series:
+                st.markdown(f"**保留剧名:** 开启 - 从原文件名中提取剧名片段")
         else:
-            tool = MultiSeasonTVRenameTool(folder_path, show_name, preserve_title)
+            tool = MultiSeasonTVRenameTool(folder_path, show_name, preserve_title, preserve_series)
             if preserve_title:
                 st.markdown(f"**保留集名:** 开启 - 从原文件名中提取集数标题")
+            if preserve_series:
+                st.markdown(f"**保留剧名:** 开启 - 从原文件名中提取剧名片段")
         
         # 检测季文件夹
         season_folders = tool.detect_season_folders()

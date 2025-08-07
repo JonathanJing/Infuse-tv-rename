@@ -11,6 +11,7 @@ import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
+from name_utils import extract_series_title_from_filename
 
 
 class DualEpisodeTVRenameTool:
@@ -26,7 +27,7 @@ class DualEpisodeTVRenameTool:
         '.srt', '.ass', '.ssa', '.sub'
     }
     
-    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2, preserve_title: bool = False):
+    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2, preserve_title: bool = False, preserve_series: bool = False):
         """
         初始化多集重命名工具
         
@@ -40,6 +41,7 @@ class DualEpisodeTVRenameTool:
         self.show_name = show_name.strip()
         self.episodes_per_file = episodes_per_file
         self.preserve_title = preserve_title
+        self.preserve_series = preserve_series
         
         # 验证输入
         if not self.root_folder.exists():
@@ -271,14 +273,19 @@ class DualEpisodeTVRenameTool:
         episode_parts = [f"E{ep:02d}" for ep in episodes]
         episode_str = "".join(episode_parts)
         
+        # 选择剧名（可从原文件名提取）
+        series_name = self.show_name
+        if self.preserve_series:
+            series_name = extract_series_title_from_filename(file_path.name, fallback=self.show_name)
+
         # 提取集名（如果需要）
         episode_title = self.extract_episode_title(file_path.name)
         
         # 构建新文件名
         if episode_title:
-            new_name = f"{self.show_name}_{season_str}{episode_str}_{episode_title}{file_path.suffix}"
+            new_name = f"{series_name}_{season_str}{episode_str}_{episode_title}{file_path.suffix}"
         else:
-            new_name = f"{self.show_name}_{season_str}{episode_str}{file_path.suffix}"
+            new_name = f"{series_name}_{season_str}{episode_str}{file_path.suffix}"
         
         return new_name
     
