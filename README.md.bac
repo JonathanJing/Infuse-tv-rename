@@ -1,0 +1,196 @@
+# Infuse TV Rename Tool | Infuse 电视剧重命名工具
+
+Batch-renaming utility to organize TV shows following Infuse naming conventions. 中英文双语说明，涵盖命令行与图形界面用法。
+
+## Overview | 概述
+
+- Rename TV episodes to Infuse-friendly names like `ShowName_S01E01.ext`.
+- 支持单季、多季、以及「每个文件包含多集」的重命名（如 `S01E01E02`）。
+- 自动同时重命名同名字幕，并尽量保留字幕语言后缀（如 `.zh`, `.eng`, `.chs.eng`）。
+- 预览与确认流程，避免误操作；如目标文件已存在将跳过，不会覆盖。
+- 提供命令行工具与 Streamlit 图形界面。
+
+## Features | 功能特性
+
+- Single season rename (folder contains all episodes of one season)
+- 多季批量重命名（根目录下每季一个子文件夹，自动识别季文件夹命名）
+- Dual/multi-episode per file support（生成 `SxxE01E02` 或 `SxxE01E02E03`）
+- 字幕文件联动改名：匹配同名字幕，保留语言片段（zh/en/eng/chs/cht/ja/ko/es/fr/de/ru/it/pt/pt-br 等）
+- 可选保留集名（从原文件名提取），可选从原文件名保留剧名片段
+- 可选为剧名添加括号后缀（如年份：`红楼梦 (1987)_S01E01`）
+- 预览模式与执行确认，避免覆盖已存在文件
+
+## Naming | 命名规范
+
+Default format | 默认格式：
+
+```text
+ShowName_S01E01.ext
+ShowName_S01E02.ext
+...
+ShowName_S02E01.ext
+...
+```
+
+Multi-episode | 多集示例：
+
+```text
+ShowName_S01E01E02.ext
+ShowName_S01E03E04.ext
+```
+
+## Requirements | 环境要求
+
+- Python 3.7+
+- OS: Windows / macOS / Linux
+
+Install | 安装：
+
+```bash
+pip install -r requirements.txt
+```
+
+## Quick Start (CLI) | 快速开始（命令行）
+
+- Single season | 单季：
+
+```bash
+python3 tv_rename.py --folder "/path/to/Season1" --show "Friends" --season 1
+python3 tv_rename.py --folder "/path/to/Season1" --show "Friends" --season 1 --preview
+```
+
+- Multi-season | 多季：
+
+```bash
+python3 multi_season_rename.py --folder "/path/to/Friends" --show "Friends"
+python3 multi_season_rename.py --folder "/path/to/Friends" --show "Friends" --manual
+python3 multi_season_rename.py --folder "/path/to/Friends" --show "Friends" --preview
+```
+
+- Dual-episode (auto-detect per file) | 双集（自动解析每文件两集）：
+
+```bash
+python3 dual_episode_rename.py --folder "/path/to/Friends" --show "Friends"
+python3 dual_episode_rename.py --folder "/path/to/Friends" --show "Friends" --preview
+```
+
+Note | 说明：当前 CLI 暴露的是基础参数；高级选项（保留集名、保留剧名、剧名括号后缀、多集数选择等）请使用图形界面。
+
+## Streamlit UI | 图形界面
+
+```bash
+streamlit run streamlit_app.py
+```
+
+UI 支持：
+
+- 单季 / 多季模式切换
+- 多集模式（每文件 2 或 3 集）
+- 保留集名、保留剧名
+- 剧名括号后缀（如年份）
+- 从文件夹名智能提取剧名、系统原生文件夹选择对话框
+
+## Season folder patterns | 支持的季文件夹命名
+
+- `Season 1`, `Season1`, `S01`, `season1`
+- `第1季`, `第2季` …
+- 纯数字：`1`, `2`, `3` …
+
+Example structure | 文件夹结构示例：
+
+```text
+Friends/
+├── Season 1/
+│   ├── episode_1.mp4
+│   ├── episode_2.mp4
+│   └── ...
+├── Season 2/
+│   ├── episode_1.mp4
+│   ├── episode_2.mp4
+│   └── ...
+└── Season 3/
+    ├── episode_1.mp4
+    ├── episode_2.mp4
+    └── ...
+```
+
+After rename | 重命名后：
+
+```text
+Friends/
+├── Season 1/
+│   ├── Friends_S01E01.mp4
+│   ├── Friends_S01E02.mp4
+│   └── ...
+├── Season 2/
+│   ├── Friends_S02E01.mp4
+│   ├── Friends_S02E02.mp4
+│   └── ...
+└── Season 3/
+    ├── Friends_S03E01.mp4
+    ├── Friends_S03E02.mp4
+    └── ...
+```
+
+## Supported formats | 支持的文件格式
+
+- Video | 视频：`.mp4`, `.mkv`, `.avi`, `.mov`, `.wmv`, `.flv`, `.webm`, `.rmvb`, `.rm`, `.m4v`, `.3gp`, `.ogv`
+- Subtitle | 字幕：`.srt`, `.ass`, `.ssa`, `.sub`
+
+字幕改名规则 | Subtitle rename notes：
+
+- 匹配同基名字幕（宽松归一化比较），改名为与视频相同的基名
+- 保留原字幕名里的语言后缀（如 `Show.S01E01.zh.srt` -> `Show_S01E01.zh.srt`）
+
+## CLI Options | 命令行参数
+
+- `tv_rename.py`
+  - `--folder/-f` TV folder | TV 剧文件夹（必需）
+  - `--show/-s` Show name | 剧名（必需）
+  - `--season/-n` Season number | 季数（默认 1）
+  - `--preview/-p` Preview only | 仅预览
+
+- `multi_season_rename.py`
+  - `--folder/-f` Root folder | 根目录（必需）
+  - `--show/-s` Show name | 剧名（必需）
+  - `--manual/-m` Manually select season folders | 手动选择季文件夹
+  - `--preview/-p` Preview only | 仅预览
+
+- `dual_episode_rename.py`
+  - `--folder/-f` Root folder | 根目录（必需）
+  - `--show/-s` Show name | 剧名（必需）
+  - `--preview/-p` Preview only | 仅预览
+
+Advanced options | 高级选项（GUI 提供）：
+
+- 保留集名（从原文件名提取并拼接到结尾，如 `..._S01E01_集名.ext`）
+- 保留剧名（优先使用源文件名中的剧名片段）
+- 剧名括号后缀（如年份：`Show (1987)_S01E01`）
+- 多集模式（每文件 2 或 3 集；底层实现支持 1–5）
+
+## Safety | 安全特性
+
+- Skips if target exists; no overwrite | 目标存在即跳过，不覆盖
+- Preview before rename | 支持预览
+- Keep original extensions | 保留原扩展名
+
+## Notes | 注意事项
+
+- 建议在实际批量操作前使用 `--preview`/GUI 预览
+- 程序按文件名排序分配集数，请先确保原文件名顺序合理
+- 批量操作前请自行备份重要文件
+
+## Troubleshooting | 故障排除
+
+- 权限错误：确认对目标目录有读写权限
+- 文件占用：关闭占用该文件的程序后重试
+- 路径错误：优先使用绝对路径
+- 自动识别季失败：使用 `--manual` 或在 GUI 中手动选择季文件夹
+
+## License | 许可证
+
+MIT License
+
+## Contributing | 贡献
+
+欢迎提交 Issue 和 Pull Request 改进本工具！

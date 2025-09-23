@@ -11,7 +11,7 @@ import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
-from name_utils import extract_series_title_from_filename
+from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename
 
 
 class DualEpisodeTVRenameTool:
@@ -181,7 +181,12 @@ class DualEpisodeTVRenameTool:
         for file_path in folder_path.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in self.VIDEO_EXTENSIONS:
                 video_files.append(file_path)
-        video_files.sort(key=lambda x: x.name.lower())
+        # 按解析出的集数排序，支持中文数字（如：第三十一回）
+        def sort_key(p: Path):
+            idx = extract_episode_index_from_filename(p.name)
+            return (idx is None, idx if idx is not None else 10**9, p.name.lower())
+
+        video_files.sort(key=sort_key)
         return video_files
 
     def _normalized_stem_for_match(self, stem: str) -> str:
