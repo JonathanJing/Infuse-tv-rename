@@ -9,11 +9,13 @@ import streamlit as st
 import os
 import subprocess
 import platform
+import pandas as pd
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from tv_rename import TVRenameTool
 from multi_season_rename import MultiSeasonTVRenameTool
 from dual_episode_rename import DualEpisodeTVRenameTool
+from rename_logger import RenameLogger
 
 
 def extract_show_name_from_folder(folder_path: str) -> str:
@@ -210,6 +212,35 @@ def main():
             if extracted_name:
                 st.session_state.show_name = extracted_name
     
+    # 撤销功能 (如果存在历史记录)
+    if folder_path and os.path.isdir(folder_path):
+        try:
+            logger = RenameLogger(folder_path)
+            if logger.has_history():
+                st.sidebar.markdown("---")
+                st.sidebar.subheader("↩️ 撤销操作")
+                if st.sidebar.button("撤销上次重命名", type="secondary", help="恢复最近一次批量重命名的文件"):
+                    with st.spinner("正在撤销..."):
+                        success, failed, msgs = logger.undo_last_batch()
+                        if success > 0:
+                            st.sidebar.success(f"已撤销 {success} 个文件的重命名")
+                        if failed > 0:
+                            st.sidebar.warning(f"撤销失败 {failed} 个文件")
+                        
+                        # 显示详情
+                        if msgs:
+                            with st.sidebar.expander("撤销详情", expanded=True):
+                                for msg in msgs:
+                                    st.write(msg)
+                        
+                        # 延时刷新以显示消息
+                        import time
+                        time.sleep(1)
+                        st.rerun()
+        except Exception as e:
+            # 忽略日志读取错误，避免影响主流程
+            print(f"Error checking history: {e}")
+
     # 剧名输入
     show_name = st.sidebar.text_input(
         "剧名",
@@ -234,10 +265,12 @@ def main():
     
     # 季数输入和多集选项（仅单季模式）
     season_number = 1
+    start_episode = 1
     single_season_multi_episode = False
     single_season_episodes_per_file = 1
     single_season_preserve_title = False
     single_season_preserve_series = False
+    single_season_keep_raw_filename = False  # 默认不开启
     if mode == "单季模式 (文件在主文件夹)":
         # 先声明，避免引用未定义
         pass
@@ -245,10 +278,18 @@ def main():
     if mode == "单季模式 (文件在主文件夹)":
         season_number = st.sidebar.number_input(
             "季数",
-            min_value=1,
+            min_value=0,
             max_value=50,
             value=1,
             help="指定这个文件夹中视频文件的季数"
+        )
+
+        start_episode = st.sidebar.number_input(
+            "起始集数",
+            min_value=1,
+            max_value=999,
+            value=1,
+            help="指定第一集的集数，后续集数将由此递增（方便处理特殊季）"
         )
         
         single_season_multi_episode = st.sidebar.checkbox(
@@ -268,6 +309,13 @@ def main():
             "📝 保留集名",
             help="从原文件名中提取并保留集数标题，如：ShowName_S01E01_集名.ext"
         )
+        
+        if single_season_preserve_title:
+             single_season_keep_raw_filename = st.sidebar.checkbox(
+                "📄 使用原文件名作为标题",
+                help="直接使用去除扩展名的原文件名作为标题，不做其他清理（适用于特殊命名格式，如日期开头的标题）"
+            )
+            
         single_season_preserve_series = st.sidebar.checkbox(
             "🏷️ 保留剧名",
             help="更智能：从原文件名中提取并保留剧名（优先使用文件中的剧名片段）"
@@ -294,6 +342,9 @@ def main():
         st.error(f"路径不是文件夹: {folder_path}")
         return
     
+    # 历史回退功能
+    check_and_show_undo(folder_path)
+    
     # 主界面
     st.header(f"📺 {show_name}")
     st.markdown(f"**文件夹:** `{folder_path}`")
@@ -309,6 +360,8 @@ def main():
             single_season_preserve_title,
             single_season_preserve_series,
             series_parentheses_suffix,
+            start_episode,
+            single_season_keep_raw_filename,
         )
     else:
         handle_multi_season_mode(
@@ -322,13 +375,42 @@ def main():
         )
 
 
-def handle_single_season_mode(folder_path: str, show_name: str, season_number: int, use_multi_episode: bool = False, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: str = ""):
+def check_and_show_undo(folder_path: str):
+    """检查并显示撤销选项"""
+    try:
+        logger = RenameLogger(folder_path)
+        if logger.has_history():
+            last_info = logger.get_last_batch_info()
+            if last_info:
+                with st.expander("⏪ 历史记录 / 撤销操作", expanded=True):
+                    st.info(f"发现最近一次重命名记录: {last_info['timestamp']} (涉及 {last_info['count']} 个文件)")
+                    if st.button("↩️ 撤销上次重命名", type="secondary", help="将文件恢复到重命名之前的状态"):
+                        with st.spinner("正在恢复文件名..."):
+                            success, failed = logger.undo_last_batch()
+                            if success > 0:
+                                st.success(f"成功恢复 {success} 个文件")
+                            if failed > 0:
+                                st.error(f"恢复失败 {failed} 个文件")
+                            if success > 0:
+                                import time
+                                import streamlit as st
+                                time.sleep(1)
+                                st.rerun()
+    except Exception as e:
+        st.error(f"读取历史记录出错: {e}")
+
+
+def handle_single_season_mode(folder_path: str, show_name: str, season_number: int, use_multi_episode: bool = False, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: str = "", start_episode: int = 1, keep_raw_filename: bool = False):
     """处理单季模式"""
     st.markdown(f"**季数:** {season_number}")
+    if start_episode > 1:
+        st.markdown(f"**起始集数:** {start_episode}")
     if use_multi_episode:
         st.markdown(f"**多集模式:** 开启 - 每个文件包含 {episodes_per_file} 集内容")
     if preserve_title:
         st.markdown(f"**保留集名:** 开启 - 从原文件名中提取集数标题")
+        if keep_raw_filename:
+             st.markdown(f"  - **原文件名模式:** 开启 (直接使用原文件名作为标题)")
     if preserve_series:
         st.markdown(f"**保留剧名:** 开启 - 从原文件名中提取剧名片段")
     if series_parentheses_suffix:
@@ -336,14 +418,84 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
     
     try:
         # 创建重命名工具
-        tool = TVRenameTool(folder_path, show_name, season_number, episodes_per_file, preserve_title, preserve_series, series_parentheses_suffix)
+        tool = TVRenameTool(folder_path, show_name, season_number, episodes_per_file, preserve_title, preserve_series, series_parentheses_suffix, start_episode, keep_raw_filename)
         
-        # 获取预览
-        rename_plan = tool.preview_rename()
+        # 获取初始文件列表
+        current_files = tool.get_video_files()
         
-        if not rename_plan:
+        if not current_files:
             st.warning("在选择的文件夹中没有找到支持的媒体文件")
             st.info("支持的文件格式: mp4, mkv, avi, mov, wmv, flv, webm, rmvb, rm, m4v, 3gp, ogv, srt, ass, ssa, sub")
+            return
+            
+        # 手动排序选项
+        enable_manual_sort = st.checkbox("🔢 手动调整文件顺序", help="开启后可以调整文件对应的集数顺序")
+        
+        final_files = current_files
+        
+        if enable_manual_sort:
+            st.info("👇 在下方表格中修改【排序】列的数字来调整顺序，然后按 Enter 确认")
+            
+            # 创建 DataFrame 用于编辑
+            # 保持顺序：如果已经有 session_state 的排序，应该尝试恢复（这里为了简单，每次重新加载时基于当前 tool 的排序，或者基于用户上次的编辑）
+            # 更好的体验是：如果文件名没变，保持上次的顺序。但由于 Streamlit 的机制，这里简单实现：
+            
+            # 构建 DataFrame
+            df_data = []
+            for idx, f in enumerate(current_files, 1):
+                df_data.append({
+                    "排序": idx,
+                    "文件名": f.name,
+                    "路径": str(f) # 隐藏列，用于映射回 Path
+                })
+            
+            df = pd.DataFrame(df_data)
+            
+            # 使用 data_editor
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "排序": st.column_config.NumberColumn(
+                        "顺序 (修改以此排序)",
+                        help="数字越小越靠前",
+                        min_value=1,
+                        max_value=len(current_files),
+                        step=1,
+                        required=True,
+                    ),
+                    "文件名": st.column_config.TextColumn(
+                        "文件名",
+                        disabled=True, # 文件名不可修改
+                    ),
+                    "路径": None # 隐藏路径列
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="file_sort_editor"
+            )
+            
+            # 根据编辑后的 DataFrame 排序
+            if edited_df is not None:
+                # 按"排序"列排序
+                sorted_df = edited_df.sort_values(by="排序")
+                
+                # 重新构建 Path 列表
+                # 注意：这里假设路径是唯一的，这在同一个文件夹下是成立的
+                sorted_paths = []
+                for _, row in sorted_df.iterrows():
+                    # 从原始列表中找到对应的 Path 对象（比用字符串重建更安全）
+                    path_str = row["路径"]
+                    original_path_obj = next((p for p in current_files if str(p) == path_str), None)
+                    if original_path_obj:
+                        sorted_paths.append(original_path_obj)
+                
+                final_files = sorted_paths
+
+        # 获取预览 (传入可能已排序的文件列表)
+        rename_plan = tool.preview_rename(files_list=final_files)
+        
+        if not rename_plan:
+            st.warning("无法生成重命名预览")
             return
         
         # 显示预览
@@ -513,7 +665,7 @@ def manual_select_season_folders(root_folder: str) -> Dict[int, Path]:
                 with col3:
                     season_num = st.number_input(
                         "季数",
-                        min_value=1,
+                        min_value=0,
                         max_value=50,
                         value=i+1,
                         key=f"season_{i}"

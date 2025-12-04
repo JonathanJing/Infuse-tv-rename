@@ -11,7 +11,8 @@ import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional
-from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename
+from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename, extract_date_from_filename
+from rename_logger import RenameLogger
 
 
 class TVRenameTool:
@@ -24,7 +25,7 @@ class TVRenameTool:
     }
     SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub'}
     
-    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None):
+    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, start_episode: int = 1, keep_raw_filename: bool = False):
         """
         初始化重命名工具
         
@@ -34,6 +35,8 @@ class TVRenameTool:
             season: 季数（默认为1）
             episodes_per_file: 每个文件包含的集数（默认为1）
             preserve_title: 是否保留集名（默认为False）
+            start_episode: 起始集数（默认为1）
+            keep_raw_filename: 是否保留原始文件名作为标题（默认为False）
         """
         self.folder_path = Path(folder_path)
         self.show_name = show_name.strip()
@@ -42,6 +45,8 @@ class TVRenameTool:
         self.preserve_title = preserve_title
         self.preserve_series = preserve_series
         self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
+        self.start_episode = start_episode
+        self.keep_raw_filename = keep_raw_filename
         
         # 验证输入
         if not self.folder_path.exists():
@@ -53,8 +58,8 @@ class TVRenameTool:
         if not self.show_name:
             raise ValueError("剧名不能为空")
         
-        if self.season < 1:
-            raise ValueError("季数必须大于0")
+        if self.season < 0:
+            raise ValueError("季数必须大于等于0")
         
         if episodes_per_file < 1 or episodes_per_file > 5:
             raise ValueError("每个文件的集数必须在1-5之间")
@@ -70,8 +75,19 @@ class TVRenameTool:
         # 优先按文件名中的集数排序（支持中文数字，如“第三十一回”），其次按名称
         def sort_key(p: Path):
             idx = extract_episode_index_from_filename(p.name)
+            date_str = extract_date_from_filename(p.name)
+            # 排序优先级:
+            # 1. 有明确的集数 (idx is not None) -> (0, idx)
+            # 2. 无集数但有日期 (date_str is not None) -> (1, date_str)
+            # 3. 都没有 -> (2, filename)
+            
+            if idx is not None:
+                return (0, idx, "")
+            if date_str is not None:
+                return (1, date_str, "")
+            
             # 将无索引的放在后面
-            return (idx is None, idx if idx is not None else 10**9, p.name.lower())
+            return (2, p.name.lower(), "")
 
         video_files.sort(key=sort_key)
         return video_files
@@ -143,6 +159,10 @@ class TVRenameTool:
         """
         if not self.preserve_title:
             return ""
+        
+        # 如果开启了保留原始文件名，直接返回去扩展名的文件名（仅做基础清理）
+        if self.keep_raw_filename:
+            return Path(filename).stem.strip()
         
         # 移除文件扩展名
         name_without_ext = Path(filename).stem
@@ -243,21 +263,24 @@ class TVRenameTool:
         
         return new_name
     
-    def preview_rename(self) -> List[Tuple[Path, str, List[int]]]:
+    def preview_rename(self, files_list: Optional[List[Path]] = None) -> List[Tuple[Path, str, List[int]]]:
         """
         预览重命名结果
         
+        Args:
+            files_list: 可选的手动排序文件列表
+            
         Returns:
             原文件路径、新文件名和集数列表的元组列表
         """
-        video_files = self.get_video_files()
+        video_files = files_list if files_list is not None else self.get_video_files()
         
         if not video_files:
             print(f"在文件夹 {self.folder_path} 中没有找到支持的媒体文件")
             return []
         
         rename_plan = []
-        episode_counter = 1
+        episode_counter = self.start_episode
         
         for file_path in video_files:
             # 根据每个文件包含的集数生成集数列表
@@ -291,6 +314,7 @@ class TVRenameTool:
         """
         success_count = 0
         failed_count = 0
+        successful_renames = []  # 用于记录成功的重命名以便写入日志
         
         for file_path, new_name, episodes in rename_plan:
             new_path = file_path.parent / new_name
@@ -307,10 +331,19 @@ class TVRenameTool:
                 episode_text = "+".join([f"第{ep}集" for ep in episodes])
                 print(f"✅ {file_path.name} -> {new_name} ({episode_text})")
                 success_count += 1
+                successful_renames.append((file_path, new_path))
                 
             except Exception as e:
                 print(f"❌ 重命名失败 {file_path.name} -> {new_name}: {e}")
                 failed_count += 1
+        
+        # 写入日志
+        if successful_renames:
+            try:
+                logger = RenameLogger(str(self.folder_path))
+                logger.log_batch(successful_renames)
+            except Exception as e:
+                print(f"⚠️  无法写入历史日志: {e}")
         
         return success_count, failed_count
     

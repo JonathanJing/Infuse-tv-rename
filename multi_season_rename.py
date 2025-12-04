@@ -12,12 +12,13 @@ import re
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from tv_rename import TVRenameTool
+from rename_logger import RenameLogger
 
 
 class MultiSeasonTVRenameTool:
     """多季TV剧重命名工具类"""
     
-    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None):
+    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, keep_raw_filename: bool = False):
         """
         初始化多季重命名工具
         
@@ -31,6 +32,7 @@ class MultiSeasonTVRenameTool:
         self.preserve_title = preserve_title
         self.preserve_series = preserve_series
         self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
+        self.keep_raw_filename = keep_raw_filename
         
         # 验证输入
         if not self.root_folder.exists():
@@ -156,6 +158,8 @@ class MultiSeasonTVRenameTool:
                     self.preserve_title,
                     self.preserve_series,
                     self.series_parentheses_suffix,
+                    1,  # start_episode
+                    self.keep_raw_filename,
                 )  # 单集模式，使用preserve_title/series设置
                 rename_plan = tool.preview_rename()
                 
@@ -185,6 +189,7 @@ class MultiSeasonTVRenameTool:
             季数到（成功数，失败数）的映射字典
         """
         results = {}
+        successful_renames = []  # 用于记录成功的重命名以便写入日志
         
         for season_num, rename_plan in all_plans.items():
             print(f"\n🔄 开始重命名第 {season_num} 季...")
@@ -207,12 +212,21 @@ class MultiSeasonTVRenameTool:
                     file_path.rename(new_path)
                     print(f"✅ {file_path.name} -> {new_name}")
                     success_count += 1
+                    successful_renames.append((file_path, new_path))
                     
                 except Exception as e:
                     print(f"❌ 重命名失败 {file_path.name} -> {new_name}: {e}")
                     failed_count += 1
             
             results[season_num] = (success_count, failed_count)
+        
+        # 写入日志
+        if successful_renames:
+            try:
+                logger = RenameLogger(str(self.root_folder))
+                logger.log_batch(successful_renames)
+            except Exception as e:
+                print(f"⚠️  无法写入历史日志: {e}")
         
         return results
     

@@ -202,6 +202,46 @@ def _chinese_numeral_to_int(text: str) -> Optional[int]:
         return parse_under_10000(text)
 
 
+def extract_date_from_filename(filename: str) -> Optional[str]:
+    """
+    从文件名中提取日期，用于排序。
+    支持格式: 
+    - YYYY-MM-DD (2023-12-01)
+    - YYYY.MM.DD (2023.12.01)
+    - YYYY MM DD (2023 12 01)
+    - YYYYMMDD (20231201)
+    
+    返回 "YYYY-MM-DD" 格式字符串，否则返回 None。
+    """
+    text = Path(filename).stem
+    text = text.translate(_FULLWIDTH_TO_ASCII)
+    
+    # 1. YYYY-MM-DD / YYYY.MM.DD / YYYY MM DD
+    # (19|20)\d{2} matches 1900-2099
+    # [-._\s] matches delimiter
+    # (0[1-9]|1[0-2]) matches 01-12
+    # (0[1-9]|[12]\d|3[01]) matches 01-31
+    pat_separated = re.compile(r"(19|20)\d{2}[-._\s](?:0[1-9]|1[0-2])[-._\s](?:0[1-9]|[12]\d|3[01])")
+    
+    match = pat_separated.search(text)
+    if match:
+        # Normalize to YYYY-MM-DD
+        raw = match.group()
+        # Replace delimiters with -
+        normalized = re.sub(r"[-._\s]", "-", raw)
+        return normalized
+        
+    # 2. YYYYMMDD
+    pat_compact = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+    match = pat_compact.search(text)
+    if match:
+        raw = match.group()
+        # Convert YYYYMMDD to YYYY-MM-DD
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+        
+    return None
+
+
 def extract_episode_index_from_filename(filename: str) -> Optional[int]:
     """
     从文件名中提取用于排序的集数索引。
@@ -209,7 +249,7 @@ def extract_episode_index_from_filename(filename: str) -> Optional[int]:
     1) "第[中文数字]([集回话讲篇期部])" → 中文转数字
     2) "第\d+([集回话讲篇期部])" → 直接数字
     3) SxxEyy/Eyy → 取 E 后数字
-    4) 末尾（或靠后）孤立数字 → 作为候选
+    4) 末尾（或靠后）孤立数字 → 作为候选 (会尝试避开识别到的日期)
     无法解析返回 None。
     """
     name = Path(filename).stem
@@ -236,11 +276,25 @@ def extract_episode_index_from_filename(filename: str) -> Optional[int]:
     if m:
         return int(m.group(1))
 
+    # 掩码日期，避免日期中的数字被误识别为集数
+    # 例如 2023-12-01，如果不掩码，可能会识别出 01 为集数 1，或者 12 为集数 12
+    # 我们先找到日期，替换为空格
+    
+    # 复用 extract_date_from_filename 的逻辑，但我们需要位置来替换
+    pat_separated = re.compile(r"(19|20)\d{2}[-._\s](?:0[1-9]|1[0-2])[-._\s](?:0[1-9]|[12]\d|3[01])")
+    text_masked = pat_separated.sub(" ", text)
+    
+    pat_compact = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+    text_masked = pat_compact.sub(" ", text_masked)
+
     # 4) 尝试靠后的孤立数字（避免年份等，选最后一个且在 1..999 之间）
-    nums = re.findall(r"(\d{1,4})", text)
+    # 使用掩码后的文本
+    nums = re.findall(r"(\d{1,4})", text_masked)
     for token in reversed(nums):
         n = int(token)
-        if 1 <= n <= 999:
+        # 放宽一点范围，但通常集数小于 1000 (柯南等长篇除外，但也很少超 2000)
+        # 且不应该是年份(虽然已尝试掩码，但可能还有 2023 在非日期格式中)
+        if 1 <= n <= 1900: # 避开年份下限
             return n
 
     return None

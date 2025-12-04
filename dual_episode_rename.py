@@ -11,7 +11,8 @@ import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
-from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename
+from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename, extract_date_from_filename
+from rename_logger import RenameLogger
 
 
 class DualEpisodeTVRenameTool:
@@ -24,7 +25,7 @@ class DualEpisodeTVRenameTool:
     }
     SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub'}
     
-    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None):
+    def __init__(self, root_folder: str, show_name: str, episodes_per_file: int = 2, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, keep_raw_filename: bool = False):
         """
         初始化多集重命名工具
         
@@ -33,6 +34,7 @@ class DualEpisodeTVRenameTool:
             show_name: 剧名
             episodes_per_file: 每个文件包含的集数（默认为2）
             preserve_title: 是否保留集名（默认为False）
+            keep_raw_filename: 是否保留原始文件名作为标题（默认为False）
         """
         self.root_folder = Path(root_folder)
         self.show_name = show_name.strip()
@@ -40,6 +42,7 @@ class DualEpisodeTVRenameTool:
         self.preserve_title = preserve_title
         self.preserve_series = preserve_series
         self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
+        self.keep_raw_filename = keep_raw_filename
         
         # 验证输入
         if not self.root_folder.exists():
@@ -184,7 +187,14 @@ class DualEpisodeTVRenameTool:
         # 按解析出的集数排序，支持中文数字（如：第三十一回）
         def sort_key(p: Path):
             idx = extract_episode_index_from_filename(p.name)
-            return (idx is None, idx if idx is not None else 10**9, p.name.lower())
+            date_str = extract_date_from_filename(p.name)
+            
+            if idx is not None:
+                return (0, idx, "")
+            if date_str is not None:
+                return (1, date_str, "")
+                
+            return (2, p.name.lower(), "")
 
         video_files.sort(key=sort_key)
         return video_files
@@ -250,6 +260,10 @@ class DualEpisodeTVRenameTool:
         """
         if not self.preserve_title:
             return ""
+            
+        # 如果开启了保留原始文件名，直接返回去扩展名的文件名（仅做基础清理）
+        if self.keep_raw_filename:
+            return Path(filename).stem.strip()
         
         # 移除文件扩展名
         name_without_ext = Path(filename).stem
@@ -441,6 +455,7 @@ class DualEpisodeTVRenameTool:
             季数到（成功数，失败数）的映射字典
         """
         results = {}
+        successful_renames = []  # 用于记录成功的重命名以便写入日志
         
         for season_num, rename_plan in all_plans.items():
             print(f"\n🔄 开始重命名第 {season_num} 季...")
@@ -464,12 +479,21 @@ class DualEpisodeTVRenameTool:
                     episode_text = "+".join([f"第{ep}集" for ep in episodes])
                     print(f"✅ {file_path.name} -> {new_name} ({episode_text})")
                     success_count += 1
+                    successful_renames.append((file_path, new_path))
                     
                 except Exception as e:
                     print(f"❌ 重命名失败 {file_path.name} -> {new_name}: {e}")
                     failed_count += 1
             
             results[season_num] = (success_count, failed_count)
+        
+        # 写入日志
+        if successful_renames:
+            try:
+                logger = RenameLogger(str(self.root_folder))
+                logger.log_batch(successful_renames)
+            except Exception as e:
+                print(f"⚠️  无法写入历史日志: {e}")
         
         return results
     
