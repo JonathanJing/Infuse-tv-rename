@@ -370,7 +370,7 @@ class TVRenameTool:
         print(f"📋 找到 {len(rename_plan)} 个媒体文件:")
         print()
         
-        for i, (file_path, new_name) in enumerate(rename_plan, 1):
+        for i, (file_path, new_name, episodes) in enumerate(rename_plan, 1):
             print(f"{i:2d}. {file_path.name}")
             print(f"    -> {new_name}")
             print()

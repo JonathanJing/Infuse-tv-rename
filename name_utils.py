@@ -286,6 +286,15 @@ def extract_episode_index_from_filename(filename: str) -> Optional[int]:
     
     pat_compact = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
     text_masked = pat_compact.sub(" ", text_masked)
+    
+    # 掩码常见的质量/分辨率标识，避免 4K/2K/8K 中的数字被误识别
+    # 例如 "01-4K.mp4" 应该识别 01 而不是 4
+    quality_patterns = [
+        r"\b4[kK]\b", r"\b2[kK]\b", r"\b8[kK]\b",
+        r"\b720[pP]\b", r"\b1080[pP]\b", r"\b2160[pP]\b",
+    ]
+    for pat in quality_patterns:
+        text_masked = re.sub(pat, " ", text_masked)
 
     # 4) 尝试靠后的孤立数字（避免年份等，选最后一个且在 1..999 之间）
     # 使用掩码后的文本

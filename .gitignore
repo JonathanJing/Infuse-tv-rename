@@ -123,4 +123,7 @@ Desktop.ini
 test_files/
 sample_videos/
 *.bak
-*.tmp 
+*.tmp
+
+# 本地快捷脚本（不提交到 GitHub）
+infuse-rename.sh 
