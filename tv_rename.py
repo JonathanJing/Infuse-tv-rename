@@ -5,14 +5,13 @@ Infuse TV Rename Tool
 批量重命名TV剧文件以符合Infuse媒体库命名规范
 """
 
-import os
 import sys
 import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional
-from name_utils import extract_series_title_from_filename, extract_episode_index_from_filename, extract_date_from_filename
-from rename_logger import RenameLogger
+from name_utils import extract_series_title_from_filename, extract_date_from_filename, parse_episode_numbers
+from rename_operations import execute_plans, validate_plan
 
 
 class TVRenameTool:
@@ -25,7 +24,7 @@ class TVRenameTool:
     }
     SUBTITLE_EXTENSIONS = {'.srt', '.ass', '.ssa', '.sub'}
     
-    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, start_episode: int = 1, keep_raw_filename: bool = False):
+    def __init__(self, folder_path: str, show_name: str, season: int = 1, episodes_per_file: int = 1, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, start_episode: int = 1, keep_raw_filename: bool = False, renumber: bool = False):
         """
         初始化重命名工具
         
@@ -47,6 +46,7 @@ class TVRenameTool:
         self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
         self.start_episode = start_episode
         self.keep_raw_filename = keep_raw_filename
+        self.renumber = renumber
         
         # 验证输入
         if not self.folder_path.exists():
@@ -58,6 +58,9 @@ class TVRenameTool:
         if not self.show_name:
             raise ValueError("剧名不能为空")
         
+        if self.start_episode < 1:
+            raise ValueError("起始集数必须大于等于1")
+
         if self.season < 0:
             raise ValueError("季数必须大于等于0")
         
@@ -74,7 +77,8 @@ class TVRenameTool:
                 video_files.append(file_path)
         # 优先按文件名中的集数排序（支持中文数字，如“第三十一回”），其次按名称
         def sort_key(p: Path):
-            idx = extract_episode_index_from_filename(p.name)
+            episodes = parse_episode_numbers(p.name)
+            idx = episodes[0] if episodes else None
             date_str = extract_date_from_filename(p.name)
             # 排序优先级:
             # 1. 有明确的集数 (idx is not None) -> (0, idx)
@@ -82,9 +86,9 @@ class TVRenameTool:
             # 3. 都没有 -> (2, filename)
             
             if idx is not None:
-                return (0, idx, "")
+                return (0, idx, p.name.lower())
             if date_str is not None:
-                return (1, date_str, "")
+                return (1, date_str, p.name.lower())
             
             # 将无索引的放在后面
             return (2, p.name.lower(), "")
@@ -111,24 +115,15 @@ class TVRenameTool:
         return text
 
     def _extract_subtitle_lang_suffix(self, video_stem: str, subtitle_stem: str) -> str:
-        """从字幕stem中提取语言后缀（如 'zh' 或 'chs.eng'）。"""
-        remainder = ''
-        if subtitle_stem.startswith(video_stem):
-            remainder = subtitle_stem[len(video_stem):]
-        # 也尝试以分隔符开头的差异
-        if remainder and remainder[0] in ['.', '_', '-', ' ']:
-            remainder = remainder[1:]
-        # 提取所有语言token
-        tokens = re.findall(r'(?:^|[._\-\s])(zh(?:-[A-Za-z]+)?|en|eng|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt|pt-br)(?=$|[._\-\s])', remainder, flags=re.IGNORECASE)
-        # 规范化、去重保持顺序
-        seen = set()
-        norm_tokens = []
-        for t in tokens:
-            key = t.lower()
-            if key not in seen:
-                seen.add(key)
-                norm_tokens.append(key)
-        return '.'.join(norm_tokens)
+        """保留字幕末尾语言标记，不依赖原名大小写及分隔符完全一致。"""
+        match = re.search(
+            r'(?:[._\-\s](?:zh(?:-[A-Za-z]+)?|eng|en|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt-br|pt))+$',
+            subtitle_stem, re.I,
+        )
+        if not match:
+            return ""
+        tokens = re.findall(r'zh(?:-[A-Za-z]+)?|pt-br|eng|en|chs|cht|chi|sc|tc|ja|jp|ko|kr|es|fr|de|ru|it|pt', match.group(), re.I)
+        return '.'.join(dict.fromkeys(t.lower() for t in tokens))
 
     def find_associated_subtitles(self, video_path: Path) -> List[Path]:
         """为给定视频查找同名字幕文件。"""
@@ -168,7 +163,6 @@ class TVRenameTool:
         name_without_ext = Path(filename).stem
         
         # 移除剧名（如果存在）
-        import re
         cleaned_name = name_without_ext
         
         # 使用实际用于该文件的剧名（更智能移除中文等不适配\b的情况）
@@ -264,88 +258,48 @@ class TVRenameTool:
         return new_name
     
     def preview_rename(self, files_list: Optional[List[Path]] = None) -> List[Tuple[Path, str, List[int]]]:
-        """
-        预览重命名结果
-        
-        Args:
-            files_list: 可选的手动排序文件列表
-            
-        Returns:
-            原文件路径、新文件名和集数列表的元组列表
-        """
+        """保留源集号和缺口；只有 renumber=True 时按给定顺序重新编号。"""
         video_files = files_list if files_list is not None else self.get_video_files()
-        
-        if not video_files:
-            print(f"在文件夹 {self.folder_path} 中没有找到支持的媒体文件")
-            return []
-        
-        rename_plan = []
-        episode_counter = self.start_episode
-        
-        for file_path in video_files:
-            # 根据每个文件包含的集数生成集数列表
-            episodes = list(range(episode_counter, episode_counter + self.episodes_per_file))
-            new_name = self.generate_new_name(file_path, episodes)
-            rename_plan.append((file_path, new_name, episodes))
-            # 同步字幕文件改名（与视频同基名）
-            new_base = Path(new_name).stem
-            associated_subs = self.find_associated_subtitles(file_path)
-            for sub_path in associated_subs:
-                # 尝试保留原有语言后缀
-                lang_suffix = self._extract_subtitle_lang_suffix(file_path.stem, sub_path.stem)
-                if lang_suffix:
-                    sub_new_name = f"{new_base}.{lang_suffix}{sub_path.suffix}"
-                else:
-                    sub_new_name = f"{new_base}{sub_path.suffix}"
-                rename_plan.append((sub_path, sub_new_name, episodes))
-            episode_counter += self.episodes_per_file
-        
-        return rename_plan
+        plan = []
+        counter = self.start_episode
+        used = set()
+        assignments = []
+        for path in video_files:
+            if self.renumber:
+                episodes = None
+            else:
+                marker = re.search(r'S(\d{1,2})E\d+', path.stem, re.I)
+                if marker and int(marker.group(1)) != self.season:
+                    raise ValueError(f"源季号与所选季号不符: {path.name}")
+                episodes = parse_episode_numbers(path.name)
+                if episodes and len(episodes) == 1:
+                    episodes = list(range(episodes[0], episodes[0] + self.episodes_per_file))
+            if episodes:
+                if used.intersection(episodes):
+                    raise ValueError(f"重复集号，需先选择保留的版本: {path.name}")
+                used.update(episodes)
+            assignments.append((path, episodes))
+        for path, episodes in assignments:
+            if episodes is None:
+                while used.intersection(range(counter, counter + self.episodes_per_file)):
+                    counter += 1
+                episodes = list(range(counter, counter + self.episodes_per_file))
+                used.update(episodes)
+            counter = max(counter, max(episodes) + 1)
+            new_name = self.generate_new_name(path, episodes)
+            plan.append((path, new_name, episodes))
+            for sub in self.find_associated_subtitles(path):
+                lang = self._extract_subtitle_lang_suffix(path.stem, sub.stem)
+                suffix = f".{lang}" if lang else ""
+                plan.append((sub, f"{Path(new_name).stem}{suffix}{sub.suffix}", episodes))
+        validate_plan([(path, name) for path, name, _ in plan])
+        return plan
     
     def execute_rename(self, rename_plan: List[Tuple[Path, str, List[int]]]) -> Tuple[int, int]:
-        """
-        执行重命名操作
-        
-        Args:
-            rename_plan: 重命名计划（原文件路径、新文件名和集数列表的元组列表）
-            
-        Returns:
-            成功和失败的文件数量元组
-        """
-        success_count = 0
-        failed_count = 0
-        successful_renames = []  # 用于记录成功的重命名以便写入日志
-        
-        for file_path, new_name, episodes in rename_plan:
-            new_path = file_path.parent / new_name
-            
-            try:
-                # 检查目标文件是否已存在
-                if new_path.exists():
-                    print(f"⚠️  跳过 {file_path.name} -> {new_name} (目标文件已存在)")
-                    failed_count += 1
-                    continue
-                
-                # 执行重命名
-                file_path.rename(new_path)
-                episode_text = "+".join([f"第{ep}集" for ep in episodes])
-                print(f"✅ {file_path.name} -> {new_name} ({episode_text})")
-                success_count += 1
-                successful_renames.append((file_path, new_path))
-                
-            except Exception as e:
-                print(f"❌ 重命名失败 {file_path.name} -> {new_name}: {e}")
-                failed_count += 1
-        
-        # 写入日志
-        if successful_renames:
-            try:
-                logger = RenameLogger(str(self.folder_path))
-                logger.log_batch(successful_renames)
-            except Exception as e:
-                print(f"⚠️  无法写入历史日志: {e}")
-        
-        return success_count, failed_count
+        return execute_plans(
+            self.folder_path,
+            {self.season: [(path, name) for path, name, _ in rename_plan]},
+        )[self.season]
     
     def run(self, preview_only: bool = False) -> None:
         """
@@ -441,11 +395,12 @@ def main():
         help='仅预览，不执行重命名'
     )
     
+    parser.add_argument("--renumber", action="store_true", help="明确按顺序重新编号，不保留源集号")
     args = parser.parse_args()
     
     try:
         # 创建重命名工具实例
-        tool = TVRenameTool(args.folder, args.show, args.season)
+        tool = TVRenameTool(args.folder, args.show, args.season, renumber=args.renumber)
         
         # 运行重命名工具
         tool.run(preview_only=args.preview)

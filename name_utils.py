@@ -202,6 +202,10 @@ def _chinese_numeral_to_int(text: str) -> Optional[int]:
         return parse_under_10000(text)
 
 
+_SEPARATED_DATE = re.compile(r"(19|20)\d{2}[-._\s](?:0[1-9]|1[0-2])[-._\s](?:0[1-9]|[12]\d|3[01])")
+_COMPACT_DATE = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
+
+
 def extract_date_from_filename(filename: str) -> Optional[str]:
     """
     从文件名中提取日期，用于排序。
@@ -221,9 +225,7 @@ def extract_date_from_filename(filename: str) -> Optional[str]:
     # [-._\s] matches delimiter
     # (0[1-9]|1[0-2]) matches 01-12
     # (0[1-9]|[12]\d|3[01]) matches 01-31
-    pat_separated = re.compile(r"(19|20)\d{2}[-._\s](?:0[1-9]|1[0-2])[-._\s](?:0[1-9]|[12]\d|3[01])")
-    
-    match = pat_separated.search(text)
+    match = _SEPARATED_DATE.search(text)
     if match:
         # Normalize to YYYY-MM-DD
         raw = match.group()
@@ -232,8 +234,7 @@ def extract_date_from_filename(filename: str) -> Optional[str]:
         return normalized
         
     # 2. YYYYMMDD
-    pat_compact = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
-    match = pat_compact.search(text)
+    match = _COMPACT_DATE.search(text)
     if match:
         raw = match.group()
         # Convert YYYYMMDD to YYYY-MM-DD
@@ -242,69 +243,57 @@ def extract_date_from_filename(filename: str) -> Optional[str]:
     return None
 
 
-def extract_episode_index_from_filename(filename: str) -> Optional[int]:
-    """
-    从文件名中提取用于排序的集数索引。
-    优先规则：
-    1) "第[中文数字]([集回话讲篇期部])" → 中文转数字
-    2) "第\d+([集回话讲篇期部])" → 直接数字
-    3) SxxEyy/Eyy → 取 E 后数字
-    4) 末尾（或靠后）孤立数字 → 作为候选 (会尝试避开识别到的日期)
-    无法解析返回 None。
-    """
-    name = Path(filename).stem
-    # 标准化全角数字
-    text = name.translate(_FULLWIDTH_TO_ASCII)
 
-    # 1) 第三十一集/回
-    m = re.search(r"第\s*([一二三四五六七八九十百千万两〇零廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟万]+)\s*[集回话讲篇期部卷]", text)
-    if m:
-        val = _chinese_numeral_to_int(m.group(1))
-        if isinstance(val, int):
-            return val
 
-    # 2) 第31集/回
-    m = re.search(r"第\s*(\d{1,4})\s*[集回话讲篇期部卷]", text)
-    if m:
-        return int(m.group(1))
 
-    # 3) SxxEyy / Eyy / EPyy
-    m = re.search(r"[Ss]\d{1,2}[Ee](\d{1,4})", text)
-    if m:
-        return int(m.group(1))
-    m = re.search(r"\bE[Pp]?(\d{1,4})\b", text)
-    if m:
-        return int(m.group(1))
-
-    # 掩码日期，避免日期中的数字被误识别为集数
-    # 例如 2023-12-01，如果不掩码，可能会识别出 01 为集数 1，或者 12 为集数 12
-    # 我们先找到日期，替换为空格
-    
-    # 复用 extract_date_from_filename 的逻辑，但我们需要位置来替换
-    pat_separated = re.compile(r"(19|20)\d{2}[-._\s](?:0[1-9]|1[0-2])[-._\s](?:0[1-9]|[12]\d|3[01])")
-    text_masked = pat_separated.sub(" ", text)
-    
-    pat_compact = re.compile(r"(19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])")
-    text_masked = pat_compact.sub(" ", text_masked)
-    
-    # 掩码常见的质量/分辨率标识，避免 4K/2K/8K 中的数字被误识别
-    # 例如 "01-4K.mp4" 应该识别 01 而不是 4
-    quality_patterns = [
-        r"\b4[kK]\b", r"\b2[kK]\b", r"\b8[kK]\b",
-        r"\b720[pP]\b", r"\b1080[pP]\b", r"\b2160[pP]\b",
-    ]
-    for pat in quality_patterns:
-        text_masked = re.sub(pat, " ", text_masked)
-
-    # 4) 尝试靠后的孤立数字（避免年份等，选最后一个且在 1..999 之间）
-    # 使用掩码后的文本
-    nums = re.findall(r"(\d{1,4})", text_masked)
-    for token in reversed(nums):
-        n = int(token)
-        # 放宽一点范围，但通常集数小于 1000 (柯南等长篇除外，但也很少超 2000)
-        # 且不应该是年份(虽然已尝试掩码，但可能还有 2023 在非日期格式中)
-        if 1 <= n <= 1900: # 避开年份下限
-            return n
-
-    return None
-
+def parse_episode_numbers(filename: str):
+    """解析明确集号，避开年份、分辨率、编码和扩展名中的数字。"""
+    text = Path(filename).stem.translate(_FULLWIDTH_TO_ASCII)
+    # E01E02E03、E01-E03、E01-E02-E03。范围展开，离散编号保持原样。
+    # 裸范围终点必须是完整数字，不能把 E03-1080p 的画质标记当成集号。
+    chain = r'(E\d+(?:(?:\s*[-–—]\s*\d+(?![A-Za-z0-9]))|(?:\s*[-–—._ ]?\s*E\d+))*)'
+    match = re.search(r'S\d{1,2}' + chain, text, re.I)
+    if not match:
+        match = re.search(r'(?<![A-Za-z0-9])' + chain, text, re.I)
+    if match:
+        token = match.group(1)
+        tail = text[match.end():]
+        if re.match(r'\s*[-–—]+\s*(?:E(?=\d|$|[._\s–—-])|\d+(?=$|[._\s–—-]|E\d))', tail, re.I):
+            raise ValueError(f"无法完整解析集数范围: {filename}")
+        episodes = [int(n) for n in re.findall(r'\d+', token)]
+        if any(ep < 1 or ep > 9999 for ep in episodes):
+            raise ValueError(f"集号超出范围: {filename}")
+        if re.fullmatch(r'E\d+\s*[-–—]\s*E?\d+', token, re.I):
+            if episodes[1] < episodes[0]:
+                raise ValueError(f"倒序集数范围: {filename}")
+            episodes = list(range(episodes[0], episodes[1] + 1))
+        elif re.search(r'[-–—]\s*\d', token):
+            raise ValueError(f"混合范围与离散集号，需明确编号: {filename}")
+    else:
+        # 与日期排序共用识别规则，避免把 2026.09-14 的月日当作集数范围。
+        text = _COMPACT_DATE.sub(' ', _SEPARATED_DATE.sub(' ', text))
+        # Preserve numeric episode names such as 03-4K after removing quality tags.
+        text = re.sub(r'(?<![A-Za-z0-9])(?:[248]k|720p|1080p|2160p)(?![A-Za-z0-9])', ' ', text, flags=re.I).strip(' ._-')
+        match = re.search(r'第\s*(\d+)\s*[-–]\s*(\d+)\s*集', text)
+        if not match:
+            match = re.search(r'(?<![A-Za-z0-9-])(\d{1,3})\s*[-–]\s*(\d{1,3})(?![A-Za-z0-9-])', text)
+        if match:
+            first, last = map(int, match.groups())
+            if not 1 <= first <= last <= 9999:
+                raise ValueError(f"倒序集数范围: {filename}")
+            episodes = list(range(first, last + 1))
+        else:
+            markers = re.findall(r'第\s*[\d一二三四五六七八九十百千万两〇零廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟]+\s*[集回话讲篇期部卷]', text)
+            if markers:
+                numbers = [re.sub(r'^第\s*|\s*[集回话讲篇期部卷]$', '', marker) for marker in markers]
+                episodes = [int(number) if number.isdecimal() else _chinese_numeral_to_int(number) for number in numbers]
+            else:
+                match = re.fullmatch(r'\s*(\d{1,4})\s*', text)
+                if not match:
+                    match = re.search(r'(?:^|[._\s-])(?:ep|episode)[._\s-]*(\d{1,4})(?=$|[._\s-])', text, re.I)
+                if not match:
+                    return None
+                episodes = [int(match.group(1))]
+    if any(ep is None or ep < 1 or ep > 9999 for ep in episodes) or len(set(episodes)) != len(episodes):
+        raise ValueError(f"无效或重复集号: {filename}")
+    return episodes

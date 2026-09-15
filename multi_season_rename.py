@@ -5,20 +5,19 @@ Multi-Season TV Rename Tool
 批量重命名多季TV剧文件，支持每个季在单独的子文件夹中
 """
 
-import os
 import sys
 import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
 from tv_rename import TVRenameTool
-from rename_logger import RenameLogger
+from rename_operations import execute_plans
 
 
 class MultiSeasonTVRenameTool:
     """多季TV剧重命名工具类"""
     
-    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, keep_raw_filename: bool = False):
+    def __init__(self, root_folder: str, show_name: str, preserve_title: bool = False, preserve_series: bool = False, series_parentheses_suffix: Optional[str] = None, keep_raw_filename: bool = False, renumber: bool = False):
         """
         初始化多季重命名工具
         
@@ -33,6 +32,7 @@ class MultiSeasonTVRenameTool:
         self.preserve_series = preserve_series
         self.series_parentheses_suffix = (series_parentheses_suffix or "").strip()
         self.keep_raw_filename = keep_raw_filename
+        self.renumber = renumber
         
         # 验证输入
         if not self.root_folder.exists():
@@ -45,93 +45,39 @@ class MultiSeasonTVRenameTool:
             raise ValueError("剧名不能为空")
     
     def detect_season_folders(self) -> Dict[int, Path]:
-        """
-        自动检测季文件夹
-        
-        Returns:
-            季数到文件夹路径的映射字典
-        """
-        season_folders = {}
-        
-        # 常见的季文件夹命名模式
-        season_patterns = [
-            r'season\s*(\d+)',  # Season 1, Season1
-            r's(\d+)',          # S1, S01
-            r'第(\d+)季',        # 第1季
-            r'season\s*(\d+)',  # season 1, season1
-            r'(\d+)',           # 纯数字
-        ]
-        
-        for item in self.root_folder.iterdir():
-            if not item.is_dir():
+        """只识别明确的季标记；重复季号必须由用户消除歧义。"""
+        folders = {}
+        for item in sorted(self.root_folder.iterdir()):
+            if not item.is_dir() or item.is_symlink():
                 continue
-            
-            folder_name = item.name.lower()
-            
-            # 尝试匹配季数
-            for pattern in season_patterns:
-                match = re.search(pattern, folder_name)
-                if match:
-                    season_num = int(match.group(1))
-                    season_folders[season_num] = item
-                    break
-        
-        return season_folders
+            match = re.search(r'(?<![A-Za-z0-9])(?:season\s*|s)(\d{1,2})(?!\d)|第\s*(\d{1,2})\s*季|^(\d{1,2})$', item.name, re.I)
+            if not match:
+                continue
+            season = int(next(value for value in match.groups() if value is not None))
+            if season in folders:
+                raise ValueError(f"重复季号 S{season:02d}: {folders[season].name}, {item.name}")
+            folders[season] = item
+        return dict(sorted(folders.items()))
     
     def manual_select_season_folders(self) -> Dict[int, Path]:
-        """
-        手动选择季文件夹
-        
-        Returns:
-            季数到文件夹路径的映射字典
-        """
-        season_folders = {}
-        
-        print(f"📁 在 {self.root_folder} 中找到以下子文件夹:")
-        print()
-        
-        folders = [item for item in self.root_folder.iterdir() if item.is_dir()]
-        folders.sort(key=lambda x: x.name.lower())
-        
-        for i, folder in enumerate(folders, 1):
-            print(f"{i:2d}. {folder.name}")
-        
-        print()
-        print("请选择要处理的季文件夹，输入对应的数字（用空格分隔，如: 1 2 3）:")
-        print("或者输入 'all' 处理所有文件夹")
-        
-        while True:
-            try:
-                choice = input("选择: ").strip()
-                
-                if choice.lower() == 'all':
-                    # 处理所有文件夹
-                    for i, folder in enumerate(folders, 1):
-                        season_folders[i] = folder
-                    break
-                
-                # 解析选择的数字
-                selected_indices = [int(x) - 1 for x in choice.split()]
-                
-                for idx in selected_indices:
-                    if 0 <= idx < len(folders):
-                        season_folders[idx + 1] = folders[idx]
-                    else:
-                        print(f"❌ 无效的选择: {idx + 1}")
-                        continue
-                
-                if season_folders:
-                    break
-                else:
-                    print("❌ 请至少选择一个文件夹")
-                    
-            except ValueError:
-                print("❌ 请输入有效的数字")
-            except KeyboardInterrupt:
-                print("\n❌ 操作被用户中断")
-                sys.exit(1)
-        
-        return season_folders
+        """选择目录后逐一输入真实季号，避免把列表序号当季号。"""
+        folders = sorted(item for item in self.root_folder.iterdir() if item.is_dir() and not item.is_symlink())
+        if not folders:
+            return {}
+        for index, folder in enumerate(folders, 1):
+            print(f"{index}. {folder.name}")
+        choice = input("选择目录序号（空格分隔，或 all）: ").strip()
+        indices = list(range(len(folders))) if choice.lower() == 'all' else [int(value) - 1 for value in choice.split()]
+        if len(set(indices)) != len(indices) or any(index < 0 or index >= len(folders) for index in indices):
+            raise ValueError("目录选择无效或重复")
+        selected = {}
+        for index in indices:
+            folder = folders[index]
+            season = int(input(f"{folder.name} 的真实季号: "))
+            if season < 0 or season in selected:
+                raise ValueError("季号无效或重复")
+            selected[season] = folder
+        return dict(sorted(selected.items()))
     
     def preview_all_seasons(self, season_folders: Dict[int, Path]) -> Dict[int, List[Tuple[Path, str]]]:
         """
@@ -160,6 +106,7 @@ class MultiSeasonTVRenameTool:
                     self.series_parentheses_suffix,
                     1,  # start_episode
                     self.keep_raw_filename,
+                    renumber=self.renumber,
                 )  # 单集模式，使用preserve_title/series设置
                 rename_plan = tool.preview_rename()
                 
@@ -174,61 +121,12 @@ class MultiSeasonTVRenameTool:
                     print(f"   ⚠️  没有找到媒体文件")
                     
             except Exception as e:
-                print(f"   ❌ 处理失败: {e}")
+                raise ValueError(f"第 {season_num} 季预览失败: {e}") from e
         
         return all_plans
     
     def execute_all_seasons(self, all_plans: Dict[int, List[Tuple[Path, str]]]) -> Dict[int, Tuple[int, int]]:
-        """
-        执行所有季的重命名操作
-        
-        Args:
-            all_plans: 季数到重命名计划的映射字典
-            
-        Returns:
-            季数到（成功数，失败数）的映射字典
-        """
-        results = {}
-        successful_renames = []  # 用于记录成功的重命名以便写入日志
-        
-        for season_num, rename_plan in all_plans.items():
-            print(f"\n🔄 开始重命名第 {season_num} 季...")
-            print("-" * 40)
-            
-            success_count = 0
-            failed_count = 0
-            
-            for file_path, new_name in rename_plan:
-                new_path = file_path.parent / new_name
-                
-                try:
-                    # 检查目标文件是否已存在
-                    if new_path.exists():
-                        print(f"⚠️  跳过 {file_path.name} -> {new_name} (目标文件已存在)")
-                        failed_count += 1
-                        continue
-                    
-                    # 执行重命名
-                    file_path.rename(new_path)
-                    print(f"✅ {file_path.name} -> {new_name}")
-                    success_count += 1
-                    successful_renames.append((file_path, new_path))
-                    
-                except Exception as e:
-                    print(f"❌ 重命名失败 {file_path.name} -> {new_name}: {e}")
-                    failed_count += 1
-            
-            results[season_num] = (success_count, failed_count)
-        
-        # 写入日志
-        if successful_renames:
-            try:
-                logger = RenameLogger(str(self.root_folder))
-                logger.log_batch(successful_renames)
-            except Exception as e:
-                print(f"⚠️  无法写入历史日志: {e}")
-        
-        return results
+        return execute_plans(self.root_folder, all_plans)
     
     def run(self, auto_detect: bool = True, preview_only: bool = False) -> None:
         """
@@ -278,6 +176,8 @@ class MultiSeasonTVRenameTool:
         
         for season_num, rename_plan in sorted(all_plans.items()):
             print(f"   第 {season_num} 季: {len(rename_plan)} 个文件")
+            for file_path, new_name in rename_plan:
+                print(f"      {file_path.name} -> {new_name}")
         
         if preview_only:
             print("\n🔍 预览模式 - 未执行重命名操作")
@@ -354,11 +254,12 @@ def main():
         help='仅预览，不执行重命名'
     )
     
+    parser.add_argument("--renumber", action="store_true", help="明确按顺序重新编号")
     args = parser.parse_args()
     
     try:
         # 创建多季重命名工具实例
-        tool = MultiSeasonTVRenameTool(args.folder, args.show)
+        tool = MultiSeasonTVRenameTool(args.folder, args.show, renumber=args.renumber)
         
         # 运行重命名工具
         tool.run(auto_detect=not args.manual, preview_only=args.preview)

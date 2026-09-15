@@ -11,7 +11,7 @@ import subprocess
 import platform
 import pandas as pd
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 from tv_rename import TVRenameTool
 from multi_season_rename import MultiSeasonTVRenameTool
 from dual_episode_rename import DualEpisodeTVRenameTool
@@ -116,6 +116,39 @@ def select_folder():
         return ""
 
 
+def update_show_name_from_folder():
+    if not st.session_state.get("show_name_input"):
+        st.session_state.show_name_input = extract_show_name_from_folder(
+            st.session_state.get("folder_input", "")
+        )
+
+
+def browse_folder():
+    selected = select_folder()
+    if selected:
+        st.session_state.folder_input = selected
+        update_show_name_from_folder()
+
+
+def use_folder_show_name():
+    st.session_state.show_name_input = extract_show_name_from_folder(
+        st.session_state.get("folder_input", "")
+    )
+
+
+def refresh_after_operation(success, failed, operation):
+    st.session_state.operation_notice = (success, failed, operation)
+    st.rerun()
+
+
+def undo_previous_batch(folder_path):
+    try:
+        success, failed = RenameLogger(folder_path).undo_last_batch()
+        st.session_state.operation_notice = (success, failed, "恢复")
+    except Exception as error:
+        st.session_state.operation_error = f"恢复失败: {error}"
+
+
 def main():
     st.set_page_config(
         page_title="Infuse TV 重命名工具",
@@ -125,6 +158,19 @@ def main():
     
     st.title("🎬 Infuse TV 重命名工具")
     st.markdown("批量重命名TV剧文件以符合Infuse媒体库命名规范")
+    error = st.session_state.pop("operation_error", None)
+    if error:
+        st.error(error)
+    notice = st.session_state.pop("operation_notice", None)
+    if notice:
+        success, failed, operation = notice
+        message = f"{operation}完成：成功 {success} 个文件，失败 {failed} 个文件"
+        if failed:
+            st.warning(message)
+        elif success:
+            st.success(message)
+        else:
+            st.info("所有文件已符合命名，无需修改")
     
     # 侧边栏配置
     st.sidebar.header("⚙️ 配置")
@@ -173,96 +219,29 @@ def main():
     # 文件夹选择
     st.sidebar.subheader("📁 选择文件夹")
     
-    # 初始化session state
-    if 'folder_path' not in st.session_state:
-        st.session_state.folder_path = ""
-    if 'show_name' not in st.session_state:
-        st.session_state.show_name = ""
-    
+    st.session_state.setdefault("folder_input", "")
+    st.session_state.setdefault("show_name_input", "")
     col1, col2 = st.sidebar.columns([3, 1])
-    
     with col1:
         folder_path = st.text_input(
-            "文件夹路径",
-            value=st.session_state.folder_path,
-            placeholder="输入或粘贴文件夹路径",
-            help="输入包含TV剧文件的文件夹完整路径",
-            key="folder_input"
+            "文件夹路径", placeholder="输入或粘贴文件夹路径",
+            help="输入包含TV剧文件的文件夹完整路径", key="folder_input",
+            on_change=update_show_name_from_folder,
         )
-    
     with col2:
-        st.write("")  # 添加空行对齐
-        if st.button("📂 浏览", help="点击打开文件夹选择对话框"):
-            selected_folder = select_folder()
-            if selected_folder:
-                st.session_state.folder_path = selected_folder
-                folder_path = selected_folder
-                # 自动从文件夹名提取剧名
-                extracted_name = extract_show_name_from_folder(selected_folder)
-                if extracted_name and not st.session_state.show_name:
-                    st.session_state.show_name = extracted_name
-                st.rerun()  # 刷新页面以更新输入框
-    
-    # 更新session state和自动提取剧名
-    if folder_path != st.session_state.folder_path:
-        st.session_state.folder_path = folder_path
-        # 当用户手动输入路径时也自动提取剧名
-        if folder_path and not st.session_state.show_name:
-            extracted_name = extract_show_name_from_folder(folder_path)
-            if extracted_name:
-                st.session_state.show_name = extracted_name
-    
-    # 撤销功能 (如果存在历史记录)
-    if folder_path and os.path.isdir(folder_path):
-        try:
-            logger = RenameLogger(folder_path)
-            if logger.has_history():
-                st.sidebar.markdown("---")
-                st.sidebar.subheader("↩️ 撤销操作")
-                if st.sidebar.button("撤销上次重命名", type="secondary", help="恢复最近一次批量重命名的文件"):
-                    with st.spinner("正在撤销..."):
-                        success, failed, msgs = logger.undo_last_batch()
-                        if success > 0:
-                            st.sidebar.success(f"已撤销 {success} 个文件的重命名")
-                        if failed > 0:
-                            st.sidebar.warning(f"撤销失败 {failed} 个文件")
-                        
-                        # 显示详情
-                        if msgs:
-                            with st.sidebar.expander("撤销详情", expanded=True):
-                                for msg in msgs:
-                                    st.write(msg)
-                        
-                        # 延时刷新以显示消息
-                        import time
-                        time.sleep(1)
-                        st.rerun()
-        except Exception as e:
-            # 忽略日志读取错误，避免影响主流程
-            print(f"Error checking history: {e}")
+        st.write("")
+        st.button("📂 浏览", help="点击打开文件夹选择对话框", on_click=browse_folder)
 
-    # 剧名输入
     show_name = st.sidebar.text_input(
-        "剧名",
-        value=st.session_state.show_name,
-        placeholder="如: Friends",
+        "剧名", placeholder="如: Friends", key="show_name_input",
         help="剧名会从文件夹名自动提取，你可以手动修改",
-        key="show_name_input"
     )
-    
-    # 更新session state中的剧名
-    if show_name != st.session_state.show_name:
-        st.session_state.show_name = show_name
-    
-    # 显示自动提取提示
-    if folder_path and st.session_state.show_name:
+    if folder_path and show_name:
         extracted_name = extract_show_name_from_folder(folder_path)
         if extracted_name and extracted_name != show_name:
             st.sidebar.info(f"💡 从文件夹提取的剧名: {extracted_name}")
-            if st.sidebar.button("🔄 使用提取的剧名", help="点击使用从文件夹名自动提取的剧名"):
-                st.session_state.show_name = extracted_name
-                st.rerun()
-    
+            st.sidebar.button("🔄 使用提取的剧名", on_click=use_folder_show_name)
+
     # 季数输入和多集选项（仅单季模式）
     season_number = 1
     start_episode = 1
@@ -271,10 +250,6 @@ def main():
     single_season_preserve_title = False
     single_season_preserve_series = False
     single_season_keep_raw_filename = False  # 默认不开启
-    if mode == "单季模式 (文件在主文件夹)":
-        # 先声明，避免引用未定义
-        pass
-    
     if mode == "单季模式 (文件在主文件夹)":
         season_number = st.sidebar.number_input(
             "季数",
@@ -289,7 +264,7 @@ def main():
             min_value=1,
             max_value=999,
             value=1,
-            help="指定第一集的集数，后续集数将由此递增（方便处理特殊季）"
+            help="无集号文件的起始编号；开启重新编号时，全部文件从这里递增"
         )
         
         single_season_multi_episode = st.sidebar.checkbox(
@@ -384,18 +359,11 @@ def check_and_show_undo(folder_path: str):
             if last_info:
                 with st.expander("⏪ 历史记录 / 撤销操作", expanded=True):
                     st.info(f"发现最近一次重命名记录: {last_info['timestamp']} (涉及 {last_info['count']} 个文件)")
-                    if st.button("↩️ 撤销上次重命名", type="secondary", help="将文件恢复到重命名之前的状态"):
-                        with st.spinner("正在恢复文件名..."):
-                            success, failed = logger.undo_last_batch()
-                            if success > 0:
-                                st.success(f"成功恢复 {success} 个文件")
-                            if failed > 0:
-                                st.error(f"恢复失败 {failed} 个文件")
-                            if success > 0:
-                                import time
-                                import streamlit as st
-                                time.sleep(1)
-                                st.rerun()
+                    st.button(
+                        "↩️ 撤销上次重命名", type="secondary",
+                        help="将文件恢复到重命名之前的状态",
+                        on_click=undo_previous_batch, args=(folder_path,),
+                    )
     except Exception as e:
         st.error(f"读取历史记录出错: {e}")
 
@@ -428,17 +396,15 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
             st.info("支持的文件格式: mp4, mkv, avi, mov, wmv, flv, webm, rmvb, rm, m4v, 3gp, ogv, srt, ass, ssa, sub")
             return
             
+        tool.renumber = st.checkbox("按顺序重新编号", help="默认保留已有集号及缺集；仅需要改变集号时开启")
+
         # 手动排序选项
-        enable_manual_sort = st.checkbox("🔢 手动调整文件顺序", help="开启后可以调整文件对应的集数顺序")
+        enable_manual_sort = st.checkbox("🔢 手动调整文件顺序", disabled=not tool.renumber, help="先开启按顺序重新编号，再调整对应顺序")
         
         final_files = current_files
         
-        if enable_manual_sort:
+        if enable_manual_sort and tool.renumber:
             st.info("👇 在下方表格中修改【排序】列的数字来调整顺序，然后按 Enter 确认")
-            
-            # 创建 DataFrame 用于编辑
-            # 保持顺序：如果已经有 session_state 的排序，应该尝试恢复（这里为了简单，每次重新加载时基于当前 tool 的排序，或者基于用户上次的编辑）
-            # 更好的体验是：如果文件名没变，保持上次的顺序。但由于 Streamlit 的机制，这里简单实现：
             
             # 构建 DataFrame
             df_data = []
@@ -470,7 +436,7 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
                     "路径": None # 隐藏路径列
                 },
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
                 key="file_sort_editor"
             )
             
@@ -524,17 +490,17 @@ def handle_single_season_mode(folder_path: str, show_name: str, season_number: i
                     "路径": str(file_path.parent)
                 })
         
-        st.dataframe(preview_data, use_container_width=True)
+        st.dataframe(preview_data, width="stretch")
         
         # 执行重命名
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("🔄 执行重命名", type="primary", use_container_width=True):
+            if st.button("🔄 执行重命名", type="primary", width="stretch"):
                 execute_single_season_rename(tool, rename_plan)
         
         with col2:
-            if st.button("🔍 仅预览", use_container_width=True):
+            if st.button("🔍 仅预览", width="stretch"):
                 st.success("预览完成，未执行重命名操作")
     
     except Exception as e:
@@ -563,6 +529,8 @@ def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode
             if series_parentheses_suffix:
                 st.markdown(f"**剧名括号后缀:** ({series_parentheses_suffix})")
         
+        tool.renumber = st.checkbox("按顺序重新编号", help="默认保留集号。若 01、02 表示多集文件的包序号，请开启此项")
+
         # 检测季文件夹
         season_folders = tool.detect_season_folders()
         
@@ -584,7 +552,7 @@ def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode
                 "路径": str(folder_path_obj)
             })
         
-        st.dataframe(season_info, use_container_width=True)
+        st.dataframe(season_info, width="stretch")
         
         # 获取预览
         st.subheader("🔍 预览重命名结果")
@@ -618,7 +586,7 @@ def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode
                             "原文件名": file_path.name,
                             "新文件名": new_name
                         })
-                st.dataframe(season_preview_data, use_container_width=True)
+                st.dataframe(season_preview_data, width="stretch")
             total_files += len(rename_plan)
         
         # 显示总览
@@ -628,11 +596,11 @@ def handle_multi_season_mode(folder_path: str, show_name: str, use_multi_episode
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("🔄 执行所有重命名", type="primary", use_container_width=True):
+            if st.button("🔄 执行所有重命名", type="primary", width="stretch"):
                 execute_multi_season_rename(tool, all_plans, use_multi_episode)
         
         with col2:
-            if st.button("🔍 仅预览", use_container_width=True):
+            if st.button("🔍 仅预览", width="stretch"):
                 st.success("预览完成，未执行重命名操作")
     
     except Exception as e:
@@ -670,76 +638,30 @@ def manual_select_season_folders(root_folder: str) -> Dict[int, Path]:
                         value=i+1,
                         key=f"season_{i}"
                     )
+                    if season_num in season_folders:
+                        st.error(f"季号 {season_num} 重复，请为每个目录选择不同季号")
+                        return {}
                     season_folders[season_num] = folder
     
     return season_folders
 
 
 def execute_single_season_rename(tool: TVRenameTool, rename_plan: List[Tuple[Path, str, List[int]]]):
-    """执行单季重命名"""
     with st.spinner("正在重命名文件..."):
         try:
-            success_count, failed_count = tool.execute_rename(rename_plan)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("成功", success_count, delta=None)
-            with col2:
-                st.metric("失败", failed_count, delta=None)
-            
-            if success_count > 0:
-                st.success(f"重命名完成! 成功: {success_count}, 失败: {failed_count}")
-            
-            if failed_count > 0:
-                st.warning("部分文件重命名失败，可能是目标文件名已存在")
-        
+            success, failed = tool.execute_rename(rename_plan)
+            refresh_after_operation(success, failed, "重命名")
         except Exception as e:
             st.error(f"重命名过程中发生错误: {e}")
 
 
-def execute_multi_season_rename(tool, all_plans: Dict[int, List[Tuple[Path, str]]], use_multi_episode: bool = False):
-    """执行多季重命名"""
+def execute_multi_season_rename(tool, all_plans, use_multi_episode=False):
     with st.spinner("正在重命名文件..."):
         try:
-            if use_multi_episode:
-                results = tool.execute_rename(all_plans)
-            else:
-                results = tool.execute_all_seasons(all_plans)
-            
-            # 显示每季结果
-            st.subheader("📊 重命名结果")
-            
-            total_success = 0
-            total_failed = 0
-            
-            result_data = []
-            for season_num, (success_count, failed_count) in sorted(results.items()):
-                result_data.append({
-                    "季数": f"第 {season_num} 季",
-                    "成功": success_count,
-                    "失败": failed_count,
-                    "总计": success_count + failed_count
-                })
-                total_success += success_count
-                total_failed += failed_count
-            
-            st.dataframe(result_data, use_container_width=True)
-            
-            # 显示总计
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("总成功", total_success)
-            with col2:
-                st.metric("总失败", total_failed)
-            with col3:
-                st.metric("总文件数", total_success + total_failed)
-            
-            if total_success > 0:
-                st.success(f"重命名完成! 总成功: {total_success}, 总失败: {total_failed}")
-            
-            if total_failed > 0:
-                st.warning("部分文件重命名失败，可能是目标文件名已存在")
-        
+            results = tool.execute_rename(all_plans) if use_multi_episode else tool.execute_all_seasons(all_plans)
+            success = sum(result[0] for result in results.values())
+            failed = sum(result[1] for result in results.values())
+            refresh_after_operation(success, failed, "重命名")
         except Exception as e:
             st.error(f"重命名过程中发生错误: {e}")
 
